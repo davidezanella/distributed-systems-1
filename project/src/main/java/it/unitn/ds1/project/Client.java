@@ -24,16 +24,26 @@ public class Client extends AbstractActor {
         // Create a timer that will periodically send a message to the receiver actor
         Cancellable timer = getContext().system().scheduler().scheduleWithFixedDelay(
                 Duration.create(1, TimeUnit.SECONDS),               // when to start generating messages
-                Duration.create(1, TimeUnit.SECONDS),               // how frequently generate them
-                this.replicas[0],                                           // destination actor reference
-                new MsgReadValue(), // the message to send
+                Duration.create(15, TimeUnit.SECONDS),               // how frequently generate them
+                this.replicas[2],                                           // destination actor reference
+                new MsgWriteRequest("1234"), // the message to send
                 getContext().system().dispatcher(),                 // system dispatcher
                 getSelf()                                           // source of the message (myself)
         );
     }
 
+    private void onMsgRWResponse(MsgRWResponse m) {
+        System.out.println("[" +
+                getSelf().path().name() +      // the name of the current actor
+                "] received a message from " +
+                getSender().path().name() +    // the name of the sender actor
+                ": value: " + m.value
+        );
+    }
+
     @Override
     public Receive createReceive() {
-        return receiveBuilder().build(); // this actor does not handle any incoming messages
+        return receiveBuilder()
+                .match(MsgRWResponse.class, this::onMsgRWResponse).build();
     }
 }

@@ -6,7 +6,7 @@ import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 
 public class Main {
-    final static int N_REPLICAS = 1;
+    final static int N_REPLICAS = 3;
     final static int N_CLIENTS = 1;
 
     public static void main(String[] args) {
@@ -16,7 +16,12 @@ public class Main {
         // Create the replicas
         final ArrayList<ActorRef> replicas = new ArrayList<ActorRef>();
         for (int i = 0; i < N_REPLICAS; i++) {
-            replicas.add(system.actorOf(Replica.props(), "replica" + i));
+            replicas.add(system.actorOf(Replica.props(i), "replica" + i));
+        }
+
+        final MsgReplicasInit msgInit = new MsgReplicasInit(replicas.toArray(new ActorRef[0]));
+        for (int i = 0; i < N_REPLICAS; i++) {
+            replicas.get(i).tell(msgInit, ActorRef.noSender());
         }
 
         // Create the clients
