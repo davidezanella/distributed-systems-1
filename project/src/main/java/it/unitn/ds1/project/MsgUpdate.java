@@ -4,7 +4,7 @@ import java.io.Serializable;
 
 public class MsgUpdate implements Serializable {
     public final String value;
-    public final String requestId;
+    public final String requestId; // used only to link it to the original write request
     public final Integer e; // epoch number
     public final Integer i; // sequence number
 

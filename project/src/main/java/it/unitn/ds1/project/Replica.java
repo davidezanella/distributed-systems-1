@@ -9,25 +9,27 @@ import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
-    final private Integer TIMEOUT = 5000; // Timeout value in milliseconds
+    final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
+    //TODO: add more to be able to simulate every different timeout situation
     final private Double PROB_OF_CRASH = 0.2; // Probability that the replica will crash while sending a message
     final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
 
     private String v = "init";
     private boolean crashed = false;
-    private Boolean isCoordinator = false;
     private Integer coordinatorIdx = 0; //TODO: implement Coordinator election
     private Integer sequenceNumber = 0;
     private Integer epochNumber = 0;
     final private Integer id;
     private ActorRef[] replicas;
 
-    private Integer AckReceived = 0; // Used in the UPDATE phase
-    private String updateValue;
+    private final HashMap<String, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
+    private final HashMap<String, String> pendingUpdates = new HashMap<>(); // waiting for quorum
+    private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>();
 
     private final HashMap<String, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
@@ -72,18 +74,19 @@ public class Replica extends AbstractActor {
                 ": write request, v: " + m.newValue
         );
 
-        if (this.id.equals(this.coordinatorIdx)){//(this.isCoordinator) {
+        if (this.id.equals(this.coordinatorIdx)) {
             System.out.println("Coordinator received an update request");
 
-            this.AckReceived = 0;
-            this.updateValue = m.newValue;
             this.sequenceNumber++;
+
+            String key = this.epochNumber + "-" + this.sequenceNumber;
+            this.AckReceived.put(key, 0);
+            this.pendingUpdates.put(key, m.newValue);
             final MsgUpdate update = new MsgUpdate(m.newValue, this.epochNumber, this.sequenceNumber, m.requestId);
 
             // Send a broadcast to all the replicas
             broadcastToReplicas(update);
-        }
-        else {
+        } else {
             String requestId = Utils.generateRandomString();
             MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
             // forward the request to the coordinator
@@ -108,13 +111,14 @@ public class Replica extends AbstractActor {
         }
 
         // respond to the coordinator with an ACK
-        MsgAck ack = new MsgAck(m.requestId);
+        MsgAck ack = new MsgAck(m.e, m.i);
         boolean sent = sendOneMessageOrCrash(getSender(), ack);
 
         if (sent) {
             Timer timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
             timerWriteOk.setRepeats(false);
-            this.timersWriteOk.put(m.requestId, timerWriteOk);
+            String key = m.e + "-" + m.i;
+            this.timersWriteOk.put(key, timerWriteOk);
             timerWriteOk.start();
         }
     }
@@ -123,16 +127,18 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        if(!this.id.equals(this.coordinatorIdx)) {//(!this.isCoordinator) {
+        if (!this.id.equals(this.coordinatorIdx)) {
             throw new Exception("Not coordinator replica receives ACK message!");
         }
 
-        if (this.AckReceived != null) {
-            this.AckReceived++; //TODO: change based on message's requestId
-            if (this.AckReceived >= Math.floor(this.replicas.length / 2.0) + 1) {
-                final MsgWriteOK okMsg = new MsgWriteOK(this.updateValue, m.requestId);
+        String key = m.e + "-" + m.i;
+        if (this.AckReceived.containsKey(key)) {
+            int num = this.AckReceived.get(key) + 1;
+            this.AckReceived.put(key, num);
+            if (num >= Math.floor(this.replicas.length / 2.0) + 1) {
+                final MsgWriteOK okMsg = new MsgWriteOK(this.pendingUpdates.get(key), m.e, m.i);
                 broadcastToReplicas(okMsg);
-                this.AckReceived = null;
+                this.AckReceived.remove(key);
             }
         }
     }
@@ -141,15 +147,19 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        if (this.timersWriteOk.containsKey(m.requestId)) {
-            this.timersWriteOk.get(m.requestId).stop();
-            this.timersWriteOk.remove(m.requestId);
+        String key = m.e + "-" + m.i;
+        if (this.timersWriteOk.containsKey(key)) {
+            this.timersWriteOk.get(key).stop();
+            this.timersWriteOk.remove(key);
 
             System.out.println("[" +
-                    getSelf().path().name() +
-                    "] write value, v: " + m.value
+                getSelf().path().name() +
+                "] write value, v: " + m.value
             );
             this.v = m.value;
+
+            // store in the history the write
+            this.updatesHistory.add(m);
         }
     }
 
@@ -165,7 +175,7 @@ public class Replica extends AbstractActor {
     }
 
     private void broadcastToReplicas(Serializable message) {
-        for(ActorRef replica : this.replicas) {
+        for (ActorRef replica : this.replicas) {
             boolean sent = sendOneMessageOrCrash(replica, message);
             if (!sent)
                 return;
@@ -176,7 +186,7 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return false;
 
-        if(Math.random() < PROB_OF_CRASH) {
+        if (Math.random() < PROB_OF_CRASH) {
             System.out.println("[" +
                     getSelf().path().name() +      // the name of the current actor
                     "] CRASHED!"
@@ -185,7 +195,7 @@ public class Replica extends AbstractActor {
             return false;
         }
 
-        int delaySecs = (int)(Math.random() * (MAX_RESP_DELAY + 1));
+        int delaySecs = (int) (Math.random() * (MAX_RESP_DELAY + 1));
 
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(delaySecs, TimeUnit.SECONDS),
@@ -199,14 +209,23 @@ public class Replica extends AbstractActor {
 
     ActionListener actionTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
-            System.out.println( "Timeout exceeded!" );
+            System.out.println("Timeout exceeded!");
             //TODO: Coordinator election
+        }
+    };
+
+    ActionListener actionSendHeartbeat = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            broadcastToReplicas(new MsgHeartbeat());
         }
     };
 
     // emulate a delay of d milliseconds
     void delay(int d) {
-        try {Thread.sleep(d);} catch (Exception ignored) {}
+        try {
+            Thread.sleep(d);
+        } catch (Exception ignored) {
+        }
     }
 
     // Here we define the mapping between the received message types

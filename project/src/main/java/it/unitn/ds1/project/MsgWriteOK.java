@@ -4,9 +4,11 @@ import java.io.Serializable;
 
 public class MsgWriteOK implements Serializable {
     public final String value;
-    public final String requestId;
-    public MsgWriteOK(String value, String requestId) {
-        this.requestId = requestId;
+    public final Integer e; // epoch number
+    public final Integer i; // sequence number
+    public MsgWriteOK(String value, Integer e, Integer i) {
+        this.e = e;
+        this.i = i;
         this.value = value;
     }
 }

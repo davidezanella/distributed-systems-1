@@ -3,8 +3,10 @@ package it.unitn.ds1.project;
 import java.io.Serializable;
 
 public class MsgAck implements Serializable {
-    public final String requestId;
-    public MsgAck(String requestId) {
-        this.requestId = requestId;
+    public final Integer e; // epoch number
+    public final Integer i; // sequence number
+    public MsgAck(Integer e, Integer i) {
+        this.e = e;
+        this.i = i;
     }
 }
