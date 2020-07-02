@@ -9,6 +9,7 @@ import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.Serializable;
+import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
@@ -24,9 +25,8 @@ public class Replica extends AbstractActor {
     private String updateValue;
 
     final private Integer TIMEOUT = 5000; // Timeout value in milliseconds
-    private Timer timerWriteOk; //TODO: maybe convert single timers to arraylist to have one timer for every message
-    private Timer timerBroadcastInit;
-    private String requestId;
+    private final HashMap<String, Timer> timersWriteOk = new HashMap<>();
+    private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
     private Timer timerHeartbeat;
 
     public Replica(Integer id) {
@@ -80,8 +80,8 @@ public class Replica extends AbstractActor {
             broadcastToReplicas(update);
         }
         else {
-            this.requestId = Utils.generateRandomString();
-            MsgWriteRequest req = new MsgWriteRequest(m.newValue, this.requestId);
+            String requestId = Utils.generateRandomString();
+            MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
             // forward the request to the coordinator
             getContext().system().scheduler().scheduleOnce(
                     Duration.create(1, TimeUnit.SECONDS),
@@ -91,28 +91,32 @@ public class Replica extends AbstractActor {
                     getSelf()
             );
 
-            this.timerBroadcastInit = new Timer(this.TIMEOUT, actionTimeoutExceeded);
-            this.timerBroadcastInit.setRepeats(false);
-            this.timerBroadcastInit.start();
+            Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+            timerBroadcastInit.setRepeats(false);
+            this.timersBroadcastInit.put(requestId, timerBroadcastInit);
+            timerBroadcastInit.start();
         }
     }
 
     private void onMsgUpdate(MsgUpdate m) {
-        if (m.requestId.equals(this.requestId))
-            this.timerBroadcastInit.stop();
+        if (this.timersBroadcastInit.containsKey(m.requestId)) {
+            this.timersBroadcastInit.get(m.requestId).stop();
+            this.timersBroadcastInit.remove(m.requestId);
+        }
 
         // respond to the coordinator with an ACK
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(1, TimeUnit.SECONDS),
                 getSender(),
-                new MsgAck(),
+                new MsgAck(m.requestId),
                 getContext().system().dispatcher(),
                 getSelf()
         );
 
-        this.timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
-        this.timerWriteOk.setRepeats(false);
-        this.timerWriteOk.start();
+        Timer timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+        timerWriteOk.setRepeats(false);
+        this.timersWriteOk.put(m.requestId, timerWriteOk);
+        timerWriteOk.start();
     }
 
     private void onMsgAck(MsgAck m) throws Exception {
@@ -123,7 +127,7 @@ public class Replica extends AbstractActor {
         if (this.AckReceived != null) {
             this.AckReceived++;
             if (this.AckReceived >= Math.floor(this.replicas.length / 2.0) + 1) {
-                final MsgWriteOK okMsg = new MsgWriteOK(this.updateValue);
+                final MsgWriteOK okMsg = new MsgWriteOK(this.updateValue, m.requestId);
                 broadcastToReplicas(okMsg);
                 this.AckReceived = null;
             }
@@ -131,12 +135,16 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgWriteOK(MsgWriteOK m) {
-        this.timerWriteOk.stop();
-        System.out.println("[" +
-                getSelf().path().name() +
-                "] write value, v: " + m.value
-        );
-        this.v = m.value;
+        if (this.timersWriteOk.containsKey(m.requestId)) {
+            this.timersWriteOk.get(m.requestId).stop();
+            this.timersWriteOk.remove(m.requestId);
+
+            System.out.println("[" +
+                    getSelf().path().name() +
+                    "] write value, v: " + m.value
+            );
+            this.v = m.value;
+        }
     }
 
     private void onMsgHeartbeat(MsgHeartbeat m) {
