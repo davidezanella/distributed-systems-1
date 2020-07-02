@@ -1,11 +1,12 @@
 package it.unitn.ds1.project;
 
-import scala.concurrent.duration.Duration;
-import java.util.concurrent.TimeUnit;
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
-import akka.actor.Props;
 import akka.actor.Cancellable;
+import akka.actor.Props;
+import scala.concurrent.duration.Duration;
+
+import java.util.concurrent.TimeUnit;
 
 public class Client extends AbstractActor {
     private ActorRef[] replicas;
@@ -26,7 +27,7 @@ public class Client extends AbstractActor {
                 Duration.create(1, TimeUnit.SECONDS),               // when to start generating messages
                 Duration.create(15, TimeUnit.SECONDS),               // how frequently generate them
                 this.replicas[2],                                           // destination actor reference
-                new MsgWriteRequest("1234"), // the message to send
+                new MsgWriteRequest("1234", null), // the message to send
                 getContext().system().dispatcher(),                 // system dispatcher
                 getSelf()                                           // source of the message (myself)
         );

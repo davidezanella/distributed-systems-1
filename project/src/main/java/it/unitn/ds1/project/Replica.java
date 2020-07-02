@@ -1,10 +1,13 @@
 package it.unitn.ds1.project;
 
-import akka.actor.Props;
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
+import akka.actor.Props;
 import scala.concurrent.duration.Duration;
 
+import javax.swing.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.io.Serializable;
 import java.util.concurrent.TimeUnit;
 
@@ -19,6 +22,12 @@ public class Replica extends AbstractActor {
 
     private Integer AckReceived = 0; // Used in the UPDATE phase
     private String updateValue;
+
+    final private Integer TIMEOUT = 5000; // Timeout value in milliseconds
+    private Timer timerWriteOk; //TODO: maybe convert single timers to arraylist to have one timer for every message
+    private Timer timerBroadcastInit;
+    private String requestId;
+    private Timer timerHeartbeat;
 
     public Replica(Integer id) {
         this.id = id;
@@ -65,24 +74,33 @@ public class Replica extends AbstractActor {
             this.AckReceived = 0;
             this.updateValue = m.newValue;
             this.sequenceNumber++;
-            final MsgUpdate update = new MsgUpdate(m.newValue, this.epochNumber, this.sequenceNumber);
+            final MsgUpdate update = new MsgUpdate(m.newValue, this.epochNumber, this.sequenceNumber, m.requestId);
 
             // Send a broadcast to all the replicas
             broadcastToReplicas(update);
         }
         else {
+            this.requestId = Utils.generateRandomString();
+            MsgWriteRequest req = new MsgWriteRequest(m.newValue, this.requestId);
             // forward the request to the coordinator
             getContext().system().scheduler().scheduleOnce(
                     Duration.create(1, TimeUnit.SECONDS),
                     replicas[coordinatorIdx],
-                    m,
+                    req,
                     getContext().system().dispatcher(),
                     getSelf()
             );
+
+            this.timerBroadcastInit = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+            this.timerBroadcastInit.setRepeats(false);
+            this.timerBroadcastInit.start();
         }
     }
 
     private void onMsgUpdate(MsgUpdate m) {
+        if (m.requestId.equals(this.requestId))
+            this.timerBroadcastInit.stop();
+
         // respond to the coordinator with an ACK
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(1, TimeUnit.SECONDS),
@@ -91,6 +109,10 @@ public class Replica extends AbstractActor {
                 getContext().system().dispatcher(),
                 getSelf()
         );
+
+        this.timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+        this.timerWriteOk.setRepeats(false);
+        this.timerWriteOk.start();
     }
 
     private void onMsgAck(MsgAck m) throws Exception {
@@ -109,11 +131,23 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgWriteOK(MsgWriteOK m) {
+        this.timerWriteOk.stop();
         System.out.println("[" +
                 getSelf().path().name() +
                 "] write value, v: " + m.value
         );
         this.v = m.value;
+    }
+
+    private void onMsgHeartbeat(MsgHeartbeat m) {
+        /*
+        Every time it receives a heartbeat from the coordinator, it stops the previous timer and initiates a new one.
+        */
+        this.timerHeartbeat.stop();
+
+        this.timerHeartbeat = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+        this.timerHeartbeat.setRepeats(false);
+        this.timerHeartbeat.start();
     }
 
     private void broadcastToReplicas(Serializable message) {
@@ -128,6 +162,18 @@ public class Replica extends AbstractActor {
         }
     }
 
+    ActionListener actionTimeoutExceeded = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            System.out.println( "Timeout exceeded!" );
+            //TODO: Coordinator election
+        }
+    };
+
+    // emulate a delay of d milliseconds
+    void delay(int d) {
+        try {Thread.sleep(d);} catch (Exception ignored) {}
+    }
+
     // Here we define the mapping between the received message types
     // and our actor methods
     @Override
@@ -138,6 +184,7 @@ public class Replica extends AbstractActor {
                 .match(MsgAck.class, this::onMsgAck)
                 .match(MsgWriteOK.class, this::onMsgWriteOK)
                 .match(MsgReadRequest.class, this::onMsgReadRequest)
-                .match(MsgWriteRequest.class, this::onMsgWriteRequest).build();
+                .match(MsgWriteRequest.class, this::onMsgWriteRequest)
+                .match(MsgHeartbeat.class, this::onMsgHeartbeat).build();
     }
 }
