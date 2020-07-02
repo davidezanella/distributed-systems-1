@@ -13,7 +13,12 @@ import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
+    final private Integer TIMEOUT = 5000; // Timeout value in milliseconds
+    final private Double PROB_OF_CRASH = 0.2; // Probability that the replica will crash while sending a message
+    final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
+
     private String v = "init";
+    private boolean crashed = false;
     private Boolean isCoordinator = false;
     private Integer coordinatorIdx = 0; //TODO: implement Coordinator election
     private Integer sequenceNumber = 0;
@@ -24,7 +29,6 @@ public class Replica extends AbstractActor {
     private Integer AckReceived = 0; // Used in the UPDATE phase
     private String updateValue;
 
-    final private Integer TIMEOUT = 5000; // Timeout value in milliseconds
     private final HashMap<String, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
     private Timer timerHeartbeat;
@@ -43,6 +47,9 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgReadRequest(MsgReadRequest m) {
+        if (this.crashed)
+            return;
+
         System.out.println("[" +
                 getSelf().path().name() +      // the name of the current actor
                 "] received a message from " +
@@ -51,16 +58,13 @@ public class Replica extends AbstractActor {
         );
 
         // send to the client a message with the value of v
-        getContext().system().scheduler().scheduleOnce(
-                Duration.create(2, TimeUnit.SECONDS),
-                getSender(),
-                new MsgRWResponse(v),
-                getContext().system().dispatcher(),
-                getSelf()
-        );
+        sendOneMessageOrCrash(getSender(), new MsgRWResponse(v));
     }
 
     private void onMsgWriteRequest(MsgWriteRequest m) {
+        if (this.crashed)
+            return;
+
         System.out.println("[" +
                 getSelf().path().name() +      // the name of the current actor
                 "] received a message from " +
@@ -83,49 +87,48 @@ public class Replica extends AbstractActor {
             String requestId = Utils.generateRandomString();
             MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
             // forward the request to the coordinator
-            getContext().system().scheduler().scheduleOnce(
-                    Duration.create(1, TimeUnit.SECONDS),
-                    replicas[coordinatorIdx],
-                    req,
-                    getContext().system().dispatcher(),
-                    getSelf()
-            );
+            boolean sent = sendOneMessageOrCrash(replicas[coordinatorIdx], req);
 
-            Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionTimeoutExceeded);
-            timerBroadcastInit.setRepeats(false);
-            this.timersBroadcastInit.put(requestId, timerBroadcastInit);
-            timerBroadcastInit.start();
+            if (sent) {
+                Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+                timerBroadcastInit.setRepeats(false);
+                this.timersBroadcastInit.put(requestId, timerBroadcastInit);
+                timerBroadcastInit.start();
+            }
         }
     }
 
     private void onMsgUpdate(MsgUpdate m) {
+        if (this.crashed)
+            return;
+
         if (this.timersBroadcastInit.containsKey(m.requestId)) {
             this.timersBroadcastInit.get(m.requestId).stop();
             this.timersBroadcastInit.remove(m.requestId);
         }
 
         // respond to the coordinator with an ACK
-        getContext().system().scheduler().scheduleOnce(
-                Duration.create(1, TimeUnit.SECONDS),
-                getSender(),
-                new MsgAck(m.requestId),
-                getContext().system().dispatcher(),
-                getSelf()
-        );
+        MsgAck ack = new MsgAck(m.requestId);
+        boolean sent = sendOneMessageOrCrash(getSender(), ack);
 
-        Timer timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
-        timerWriteOk.setRepeats(false);
-        this.timersWriteOk.put(m.requestId, timerWriteOk);
-        timerWriteOk.start();
+        if (sent) {
+            Timer timerWriteOk = new Timer(this.TIMEOUT, actionTimeoutExceeded);
+            timerWriteOk.setRepeats(false);
+            this.timersWriteOk.put(m.requestId, timerWriteOk);
+            timerWriteOk.start();
+        }
     }
 
     private void onMsgAck(MsgAck m) throws Exception {
+        if (this.crashed)
+            return;
+
         if(!this.id.equals(this.coordinatorIdx)) {//(!this.isCoordinator) {
             throw new Exception("Not coordinator replica receives ACK message!");
         }
 
         if (this.AckReceived != null) {
-            this.AckReceived++;
+            this.AckReceived++; //TODO: change based on message's requestId
             if (this.AckReceived >= Math.floor(this.replicas.length / 2.0) + 1) {
                 final MsgWriteOK okMsg = new MsgWriteOK(this.updateValue, m.requestId);
                 broadcastToReplicas(okMsg);
@@ -135,6 +138,9 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgWriteOK(MsgWriteOK m) {
+        if (this.crashed)
+            return;
+
         if (this.timersWriteOk.containsKey(m.requestId)) {
             this.timersWriteOk.get(m.requestId).stop();
             this.timersWriteOk.remove(m.requestId);
@@ -160,14 +166,35 @@ public class Replica extends AbstractActor {
 
     private void broadcastToReplicas(Serializable message) {
         for(ActorRef replica : this.replicas) {
-            getContext().system().scheduler().scheduleOnce(
-                    Duration.create(1, TimeUnit.SECONDS),
-                    replica,
-                    message,
-                    getContext().system().dispatcher(),
-                    getSelf()
-            );
+            boolean sent = sendOneMessageOrCrash(replica, message);
+            if (!sent)
+                return;
         }
+    }
+
+    private boolean sendOneMessageOrCrash(ActorRef dest, Serializable msg) {
+        if (this.crashed)
+            return false;
+
+        if(Math.random() < PROB_OF_CRASH) {
+            System.out.println("[" +
+                    getSelf().path().name() +      // the name of the current actor
+                    "] CRASHED!"
+            );
+            this.crashed = true;
+            return false;
+        }
+
+        int delaySecs = (int)(Math.random() * (MAX_RESP_DELAY + 1));
+
+        getContext().system().scheduler().scheduleOnce(
+                Duration.create(delaySecs, TimeUnit.SECONDS),
+                dest,
+                msg,
+                getContext().system().dispatcher(),
+                getSelf()
+        );
+        return true;
     }
 
     ActionListener actionTimeoutExceeded = new ActionListener() {
