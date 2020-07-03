@@ -196,8 +196,8 @@ public class Replica extends AbstractActor {
     private boolean sendOneMessageOrCrash(ActorRef dest, Serializable msg) {
         if (this.crashed)
             return false;
-        double realization = Math.random();
-        if (realization < PROB_OF_CRASH) {
+
+        if (Math.random() < PROB_OF_CRASH) {
             System.out.println("[" +
                     getSelf().path().name() +      // the name of the current actor
                     "] CRASHED!"
