@@ -7,6 +7,7 @@ import akka.actor.Props;
 import scala.concurrent.duration.Duration;
 
 import java.util.concurrent.TimeUnit;
+import java.util.Random;
 
 public class Client extends AbstractActor {
     private ActorRef[] replicas;
@@ -19,6 +20,10 @@ public class Client extends AbstractActor {
         return Props.create(Client.class, () -> new Client(replicas));
     }
 
+    private int getRandomReplica() {
+        return new Random().nextInt(this.replicas.length);
+    }
+
     @Override
     public void preStart() {
 
@@ -26,7 +31,7 @@ public class Client extends AbstractActor {
         Cancellable timer = getContext().system().scheduler().scheduleWithFixedDelay(
                 Duration.create(15, TimeUnit.SECONDS),               // when to start generating messages
                 Duration.create(15, TimeUnit.SECONDS),               // how frequently generate them
-                this.replicas[2],                                           // destination actor reference
+                this.replicas[getRandomReplica()],                  // destination actor reference
                 new MsgWriteRequest("1234", null), // the message to send
                 getContext().system().dispatcher(),                 // system dispatcher
                 getSelf()                                           // source of the message (myself)
