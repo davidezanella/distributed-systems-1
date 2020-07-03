@@ -1,0 +1,33 @@
+it/unitn/ds1/project/Client.java
+ it.unitn.ds1.project.Client
+it/unitn/ds1/project/MsgReadRequest.java
+ it.unitn.ds1.project.MsgReadRequest
+it/unitn/ds1/project/MsgWriteOK.java
+ it.unitn.ds1.project.MsgWriteOK
+it/unitn/ds1/project/MsgWriteRequest.java
+ it.unitn.ds1.project.MsgWriteRequest
+it/unitn/ds1/project/MsgRWResponse.java
+ it.unitn.ds1.project.MsgRWResponse
+it/unitn/ds1/project/MsgUpdate.java
+ it.unitn.ds1.project.MsgUpdate
+it/unitn/ds1/project/MsgAck.java
+ it.unitn.ds1.project.MsgAck
+it/unitn/ds1/project/MsgReplicasInit.java
+ it.unitn.ds1.project.MsgReplicasInit
+it/unitn/ds1/project/MsgElection.java
+ it.unitn.ds1.project.MsgElection
+it/unitn/ds1/project/Utils.java
+ it.unitn.ds1.project.Utils
+it/unitn/ds1/project/MsgHeartbeat.java
+ it.unitn.ds1.project.MsgHeartbeat
+it/unitn/ds1/project/Main.java
+ it.unitn.ds1.project.Main
+it/unitn/ds1/project/MsgCoordinator.java
+ it.unitn.ds1.project.MsgCoordinator
+it/unitn/ds1/project/Replica.java
+ it.unitn.ds1.project.Replica
+ it.unitn.ds1.project.Replica$1
+ it.unitn.ds1.project.Replica$2
+ it.unitn.ds1.project.Replica$3
+ it.unitn.ds1.project.Replica$4
+ it.unitn.ds1.project.Replica$5
