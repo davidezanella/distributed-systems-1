@@ -20,8 +20,9 @@ public class Client extends AbstractActor {
         return Props.create(Client.class, () -> new Client(replicas));
     }
 
-    private int getRandomReplica() {
-        return new Random().nextInt(this.replicas.length);
+    private int getIDRandomReplica() {
+        int idx = new Random().nextInt(this.replicas.length);
+        return idx;
     }
 
     @Override
@@ -31,7 +32,7 @@ public class Client extends AbstractActor {
         Cancellable timer = getContext().system().scheduler().scheduleWithFixedDelay(
                 Duration.create(15, TimeUnit.SECONDS),               // when to start generating messages
                 Duration.create(15, TimeUnit.SECONDS),               // how frequently generate them
-                this.replicas[getRandomReplica()],                  // destination actor reference
+                this.replicas[getIDRandomReplica()],                  // destination actor reference
                 new MsgWriteRequest("1234", null), // the message to send
                 getContext().system().dispatcher(),                 // system dispatcher
                 getSelf()                                           // source of the message (myself)
