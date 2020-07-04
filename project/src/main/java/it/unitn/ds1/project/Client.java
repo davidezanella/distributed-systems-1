@@ -8,6 +8,7 @@ import scala.concurrent.duration.Duration;
 
 import java.util.concurrent.TimeUnit;
 import java.util.Random;
+import java.io.Serializable;
 
 public class Client extends AbstractActor {
     private ActorRef[] replicas;
@@ -25,18 +26,28 @@ public class Client extends AbstractActor {
         return idx;
     }
 
+    private Serializable getNewRequest() {
+        int coin = new Random().nextInt(2);
+        if(coin == 0) {
+            return new MsgWriteRequest("1234", null);
+        } else {
+            return new MsgReadRequest();
+        }
+    }
+
     @Override
     public void preStart() {
-
+        
         // Create a timer that will periodically send a message to the receiver actor
         Cancellable timer = getContext().system().scheduler().scheduleWithFixedDelay(
-                Duration.create(15, TimeUnit.SECONDS),               // when to start generating messages
-                Duration.create(15, TimeUnit.SECONDS),               // how frequently generate them
-                this.replicas[getIDRandomReplica()],                  // destination actor reference
-                new MsgWriteRequest("1234", null), // the message to send
+                Duration.create(5, TimeUnit.SECONDS),               // when to start generating messages
+                Duration.create(5, TimeUnit.SECONDS),               // how frequently generate them
+                getSelf(),                  // destination actor reference
+                new MsgSelf(), // the message to send
                 getContext().system().dispatcher(),                 // system dispatcher
                 getSelf()                                           // source of the message (myself)
         );
+        
     }
 
     private void onMsgRWResponse(MsgRWResponse m) {
@@ -48,9 +59,22 @@ public class Client extends AbstractActor {
         );
     }
 
+    private void onMsgSelf(MsgSelf m) {
+        int delaySecs = 0;
+        getContext().system().scheduler().scheduleOnce(
+                Duration.create(delaySecs, TimeUnit.SECONDS),
+                this.replicas[getIDRandomReplica()],
+                getNewRequest(),
+                getContext().system().dispatcher(),
+                getSelf()
+        );
+    }
+
     @Override
     public Receive createReceive() {
         return receiveBuilder()
-                .match(MsgRWResponse.class, this::onMsgRWResponse).build();
+                .match(MsgRWResponse.class, this::onMsgRWResponse)
+                .match(MsgSelf.class, this::onMsgSelf)
+                .build();
     }
 }
