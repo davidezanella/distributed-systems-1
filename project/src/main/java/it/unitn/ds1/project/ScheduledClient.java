@@ -4,17 +4,25 @@ import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
+import akka.event.DiagnosticLoggingAdapter;
+import akka.event.Logging;
 import scala.concurrent.duration.Duration;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.Random;
 import java.io.Serializable;
 
 public class ScheduledClient extends AbstractActor {
+    DiagnosticLoggingAdapter log = Logging.getLogger(this);
     private int cont_messages;
     private ActorRef[] replicas;
 
     public ScheduledClient(ActorRef[] replicas) {
+        Map<String, Object> mdc = new HashMap<String, Object>();
+        mdc.put("elementId", getSelf().path().name());
+        log.setMDC(mdc);
         this.replicas = replicas;
         cont_messages = 0;
     }
@@ -43,13 +51,12 @@ public class ScheduledClient extends AbstractActor {
         
     }
 
-    private void onMsgRWResponse(MsgRWResponse m) {
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] received a message from " +
-                getSender().path().name() +    // the name of the sender actor
-                ": value: " + m.value
-        );
+    private void onMsgReadResponse(MsgReadResponse m) {
+        log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.value);
+    }
+
+    private void onMsgWriteResponse(MsgWriteResponse m) {
+        log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.value);
     }
 
     private Serializable getNewRequest() {
@@ -65,20 +72,26 @@ public class ScheduledClient extends AbstractActor {
     }
 
     private void onMsgSelf(MsgSelf m) {
+        ActorRef dest = this.replicas[getIDRandomReplica()];
+        Serializable req = getNewRequest();
+
         int delaySecs = 0;
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(delaySecs, TimeUnit.SECONDS),
-                this.replicas[getIDRandomReplica()],
-                getNewRequest(),
+                dest,
+                req,
                 getContext().system().dispatcher(),
                 getSelf()
         );
+
+        log.info("sent " + req + " to " + dest.path().name());
     }
 
     @Override
     public Receive createReceive() {
         return receiveBuilder()
-                .match(MsgRWResponse.class, this::onMsgRWResponse)
+                .match(MsgReadResponse.class, this::onMsgReadResponse)
+                .match(MsgWriteResponse.class, this::onMsgWriteResponse)
                 .match(MsgSelf.class, this::onMsgSelf)
                 .build();
     }

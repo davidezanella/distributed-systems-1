@@ -6,4 +6,9 @@ import java.util.HashMap;
 
 public class MsgCoordinator implements Serializable {
     HashMap<Integer, ArrayList<MsgWriteOK>> nodesHistory = new HashMap<>();
+
+    @Override
+    public String toString() {
+        return "coordinator";
+    }
 }

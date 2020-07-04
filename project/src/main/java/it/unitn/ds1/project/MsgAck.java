@@ -9,4 +9,9 @@ public class MsgAck implements Serializable {
         this.e = e;
         this.i = i;
     }
+
+    @Override
+    public String toString() {
+        return "ack";
+    }
 }

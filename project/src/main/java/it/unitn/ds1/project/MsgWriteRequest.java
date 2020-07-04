@@ -9,4 +9,9 @@ public class MsgWriteRequest implements Serializable {
         this.requestId = requestId;
         this.newValue = newValue;
     }
+
+    @Override
+    public String toString() {
+        return "write_req";
+    }
 }

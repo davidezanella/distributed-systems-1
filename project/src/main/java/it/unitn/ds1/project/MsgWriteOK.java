@@ -11,4 +11,9 @@ public class MsgWriteOK implements Serializable {
         this.i = i;
         this.value = value;
     }
+
+    @Override
+    public String toString() {
+        return "write_ok";
+    }
 }

@@ -3,6 +3,8 @@ package it.unitn.ds1.project;
 import akka.actor.AbstractActor;
 import akka.actor.ActorRef;
 import akka.actor.Props;
+import akka.event.DiagnosticLoggingAdapter;
+import akka.event.Logging;
 import scala.concurrent.duration.Duration;
 
 import javax.swing.*;
@@ -12,9 +14,12 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
+    DiagnosticLoggingAdapter log = Logging.getLogger(this);
+
     final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
     final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
 
@@ -37,6 +42,9 @@ public class Replica extends AbstractActor {
     private Timer timerElection;
 
     public Replica(Integer id) {
+        Map<String, Object> mdc = new HashMap<String, Object>();
+        mdc.put("elementId", getSelf().path().name());
+        log.setMDC(mdc);
         this.id = id;
     }
 
@@ -57,31 +65,19 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] received a message from " +
-                getSender().path().name() +    // the name of the sender actor
-                ": read request"
-        );
+        log.info("received " + m + " from " + getSender().path().name());
 
         // send to the client a message with the value of v
-        sendOneMessage(getSender(), new MsgRWResponse(v));
+        sendOneMessage(getSender(), new MsgReadResponse(v));
     }
 
     private void onMsgWriteRequest(MsgWriteRequest m) {
         if (this.crashed)
             return;
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] received a message from " +
-                getSender().path().name() +    // the name of the sender actor
-                ": write request, v: " + m.newValue
-        );
+        log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.newValue);
 
         if (this.id.equals(this.coordinatorIdx)) {
-            System.out.println("Coordinator received an update request");
-
             this.sequenceNumber++;
 
             String key = this.epochNumber + "-" + this.sequenceNumber;
@@ -110,6 +106,8 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i + " - value: " + m.value);
+
         if (this.timersBroadcastInit.containsKey(m.requestId)) {
             this.timersBroadcastInit.get(m.requestId).stop();
             this.timersBroadcastInit.remove(m.requestId);
@@ -132,6 +130,8 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i);
+
         if (!this.id.equals(this.coordinatorIdx)) {
             throw new Exception("Not coordinator replica receives ACK message!");
         }
@@ -152,15 +152,12 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i + " - value: " + m.value);
+
         String key = m.e + "-" + m.i;
         if (this.timersWriteOk.containsKey(key)) {
             this.timersWriteOk.get(key).stop();
             this.timersWriteOk.remove(key);
-
-            System.out.println("[" +
-                    getSelf().path().name() +
-                    "] write value, v: " + m.value
-            );
             this.v = m.value;
 
             // store in the history the write
@@ -172,6 +169,8 @@ public class Replica extends AbstractActor {
         /*
         Every time it receives a heartbeat from the coordinator, it stops the previous timer and initiates a new one.
         */
+        log.info("received " + m + " from " + getSender().path().name());
+
         if(this.timerHeartbeat != null)
             this.timerHeartbeat.stop();
 
@@ -196,6 +195,8 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return false;
 
+        log.info("sent " + msg + " to " + dest.path().name());
+
         int delaySecs = (int) (Math.random() * MAX_RESP_DELAY);
 
         getContext().system().scheduler().scheduleOnce(
@@ -210,10 +211,7 @@ public class Replica extends AbstractActor {
 
     ActionListener actionWriteOKTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
-            System.out.println("[" +
-                    getSelf().path().name() +      // the name of the current actor
-                    "] WriteOK timeout exceeded while contacting Coordinator!"
-            );
+            log.info("timeout WriteOK");
 
             startCoordinatorElection();
         }
@@ -221,10 +219,7 @@ public class Replica extends AbstractActor {
 
     ActionListener actionBroadcastTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
-            System.out.println("[" +
-                    getSelf().path().name() +      // the name of the current actor
-                    "] Broadcast timeout exceeded while contacting Coordinator!"
-            );
+            log.info("timeout Broadcast");
 
             startCoordinatorElection();
         }
@@ -232,21 +227,13 @@ public class Replica extends AbstractActor {
 
     ActionListener actionHeartbeatTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
-            System.out.println("[" +
-                    getSelf().path().name() +      // the name of the current actor
-                    "] Heartbeat timeout exceeded while contacting Coordinator!"
-            );
+            log.info("timeout Heartbeat");
 
             startCoordinatorElection();
         }
     };
 
     void startCoordinatorElection() {
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] Starting coordinator election"
-        );
-
         MsgElection election = new MsgElection();
         election.nodesHistory.put(id, updatesHistory);
         nextReplicaTry = 0;
@@ -263,6 +250,8 @@ public class Replica extends AbstractActor {
     private Integer nextReplicaTry = 0;
     private Serializable messageToSend;
     private void onMsgElection(MsgElection m) {
+        log.info("received " + m + " from " + getSender().path().name());
+
         sendOneMessage(getSender(), new MsgElectionAck());
 
         nextReplicaTry = 0;
@@ -289,6 +278,8 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgElectionAck(MsgElectionAck m) {
+        log.info("received " + m + " from " + getSender().path().name());
+
         if (this.timerElection != null && this.timerElection.isRunning())
             this.timerElection.stop();
     }
@@ -296,11 +287,8 @@ public class Replica extends AbstractActor {
     ActionListener actionElectionTimeout = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
             ActorRef previousReplica = getNextReplica(nextReplicaTry);
-            System.out.println("[" +
-                    getSelf().path().name() +      // the name of the current actor
-                    "] timeout while sending election message to " +
-                    previousReplica.path().name()
-            );
+
+            log.info("timeout Election contacting " + previousReplica.path().name());
 
             nextReplicaTry++;
             ActorRef nextReplica = getNextReplica(nextReplicaTry);
@@ -314,6 +302,8 @@ public class Replica extends AbstractActor {
     };
 
     private void onMsgCoordinator(MsgCoordinator m) {
+        log.info("received " + m + " from " + getSender().path().name());
+
         ActorRef nextReplica = getNextReplica(0);
 
         // decide the new coordinator and, if necessary, forward the coordinator message
@@ -374,13 +364,9 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgSynchronization(MsgSynchronization m) {
-        coordinatorIdx = m.id;
+        log.info("received " + m + " from " + getSender().path().name() + " - coordId: " + m.id);
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] new coordinator is: " +
-                coordinatorIdx
-        );
+        coordinatorIdx = m.id;
 
         onMsgHeartbeat(null);
     }
@@ -392,12 +378,9 @@ public class Replica extends AbstractActor {
     };
 
     private void onMsgCrash(MsgCrash m) {
-        this.crashed = true;
+        log.info("received " + m + " from " + getSender().path().name());
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] CRASHED "
-        );
+        this.crashed = true;
     }
 
     // Here we define the mapping between the received message types

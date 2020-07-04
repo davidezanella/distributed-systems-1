@@ -7,4 +7,9 @@ public class MsgSynchronization implements Serializable {
     public MsgSynchronization(Integer id){
         this.id = id;
     }
+
+    @Override
+    public String toString() {
+        return "sync";
+    }
 }

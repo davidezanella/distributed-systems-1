@@ -6,4 +6,9 @@ public class MsgReadRequest implements Serializable {
     public MsgReadRequest(){
 
     }
+
+    @Override
+    public String toString() {
+        return "read_req";
+    }
 }

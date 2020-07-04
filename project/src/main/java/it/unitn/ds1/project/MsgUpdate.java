@@ -14,4 +14,9 @@ public class MsgUpdate implements Serializable {
         this.i = i;
         this.requestId = requestId;
     }
+
+    @Override
+    public String toString() {
+        return "update";
+    }
 }

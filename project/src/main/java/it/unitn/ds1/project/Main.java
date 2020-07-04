@@ -1,9 +1,10 @@
 package it.unitn.ds1.project;
 
-import java.io.IOException;
-import java.util.ArrayList;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
+
+import java.io.IOException;
+import java.util.ArrayList;
 
 public class Main {
     final static int N_REPLICAS = 3;
@@ -13,6 +14,8 @@ public class Main {
     public static void main(String[] args) {
         // Create an actor system named "ds1-project"
         final ActorSystem system = ActorSystem.create("ds1-project");
+
+        //appConfig.withFallback(ConfigFactory.defaultReference(classLoader));
 
         // Create the replicas
         final ArrayList<ActorRef> replicas = new ArrayList<ActorRef>();
