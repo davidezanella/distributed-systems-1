@@ -16,8 +16,6 @@ import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
     final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
-    //TODO: add more to be able to simulate every different timeout situation
-    final private Double PROB_OF_CRASH = 0.02; // Probability that the replica will crash while sending a message
     final private Integer MAX_RESP_DELAY = 1; // Maximum delay in seconds while sending a message
 
     private String v = "init";
@@ -66,7 +64,7 @@ public class Replica extends AbstractActor {
         );
 
         // send to the client a message with the value of v
-        sendOneMessageOrCrash(getSender(), new MsgRWResponse(v));
+        sendOneMessage(getSender(), new MsgRWResponse(v));
     }
 
     private void onMsgWriteRequest(MsgWriteRequest m) {
@@ -96,7 +94,7 @@ public class Replica extends AbstractActor {
             String requestId = Utils.generateRandomString();
             MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
             // forward the request to the coordinator
-            boolean sent = sendOneMessageOrCrash(replicas[coordinatorIdx], req);
+            boolean sent = sendOneMessage(replicas[coordinatorIdx], req);
 
             if (sent) {
                 Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionBroadcastTimeoutExceeded);
@@ -118,7 +116,7 @@ public class Replica extends AbstractActor {
 
         // respond to the coordinator with an ACK
         MsgAck ack = new MsgAck(m.e, m.i);
-        boolean sent = sendOneMessageOrCrash(getSender(), ack);
+        boolean sent = sendOneMessage(getSender(), ack);
 
         if (sent) {
             Timer timerWriteOk = new Timer(this.TIMEOUT, actionWriteOKTimeoutExceeded);
@@ -187,24 +185,15 @@ public class Replica extends AbstractActor {
 
     private void broadcastToReplicas(Serializable message) {
         for (ActorRef replica : this.replicas) {
-            boolean sent = sendOneMessageOrCrash(replica, message);
+            boolean sent = sendOneMessage(replica, message);
             if (!sent)
                 return;
         }
     }
 
-    private boolean sendOneMessageOrCrash(ActorRef dest, Serializable msg) {
+    private boolean sendOneMessage(ActorRef dest, Serializable msg) {
         if (this.crashed)
             return false;
-
-        if (Math.random() < PROB_OF_CRASH) {
-            System.out.println("[" +
-                    getSelf().path().name() +      // the name of the current actor
-                    "] CRASHED!"
-            );
-            this.crashed = true;
-            return false;
-        }
 
         int delaySecs = (int) (Math.random() * MAX_RESP_DELAY);
 
@@ -261,7 +250,7 @@ public class Replica extends AbstractActor {
         MsgElection election = new MsgElection();
         election.nodesHistory.put(id, updatesHistory);
         ActorRef nextReplica = replicas[(id + 1) % replicas.length];
-        sendOneMessageOrCrash(nextReplica, election);
+        sendOneMessage(nextReplica, election);
 
     }
 
@@ -273,10 +262,10 @@ public class Replica extends AbstractActor {
             // forward the coordinator message
             MsgCoordinator coord = new MsgCoordinator();
             coord.nodesHistory = m.nodesHistory;
-            sendOneMessageOrCrash(nextReplica, coord);
+            sendOneMessage(nextReplica, coord);
         } else {
             m.nodesHistory.put(id, updatesHistory);
-            sendOneMessageOrCrash(nextReplica, m);
+            sendOneMessage(nextReplica, m);
         }
     }
 
@@ -316,7 +305,7 @@ public class Replica extends AbstractActor {
 
         if (!newCoord.equals(coordinatorIdx)) {
             coordinatorIdx = newCoord;
-            sendOneMessageOrCrash(nextReplica, m);
+            sendOneMessage(nextReplica, m);
 
             if (newCoord.equals(id)) {
                 // set up the new coordinator
@@ -347,11 +336,21 @@ public class Replica extends AbstractActor {
         }
     };
 
+    private void onMsgCrash(MsgCrash m) {
+        this.crashed = true;
+
+        System.out.println("[" +
+                getSelf().path().name() +      // the name of the current actor
+                "] CRASHED "
+        );
+    }
+
     // Here we define the mapping between the received message types
     // and our actor methods
     @Override
     public Receive createReceive() {
         return receiveBuilder()
+                .match(MsgCrash.class, this::onMsgCrash)
                 .match(MsgReplicasInit.class, this::onMsgReplicasInit)
                 .match(MsgUpdate.class, this::onMsgUpdate)
                 .match(MsgAck.class, this::onMsgAck)
