@@ -29,7 +29,7 @@ public class Client extends AbstractActor {
     private Serializable getNewRequest() {
         int coin = new Random().nextInt(2);
         if(coin == 0) {
-            return new MsgWriteRequest("1234", null);
+            return new MsgWriteRequest(Utils.generateRandomString(), null);
         } else {
             return new MsgReadRequest();
         }
