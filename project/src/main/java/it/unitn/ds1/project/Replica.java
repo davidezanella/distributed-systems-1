@@ -341,14 +341,7 @@ public class Replica extends AbstractActor {
 
         Integer newCoord = ids.get(0);
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] new coordinator is: " +
-                newCoord
-        );
-
         if (!newCoord.equals(coordinatorIdx)) {
-            coordinatorIdx = newCoord;
             sendOneMessage(nextReplica, m);
 
             if (newCoord.equals(id)) {
@@ -366,12 +359,30 @@ public class Replica extends AbstractActor {
                 this.timerCoordinatorHeartbeat.setRepeats(true);
                 this.timerCoordinatorHeartbeat.start();
 
-                //TODO: send SYNCHRONIZATION message and sync replicas
-            }
-            else {
-                onMsgHeartbeat(null);
+                // Send SYNCHRONIZATION message and sync replicas
+                broadcastToReplicas(new MsgSynchronization(this.id));
+
+                for (int repId: m.nodesHistory.keySet()) {
+                    for (int i = 0; i < this.updatesHistory.size(); i++){
+                        if (i >= m.nodesHistory.get(repId).size()){
+                            sendOneMessage(this.replicas[repId], this.updatesHistory.get(i));
+                        }
+                    }
+                }
             }
         }
+    }
+
+    private void onMsgSynchronization(MsgSynchronization m) {
+        coordinatorIdx = m.id;
+
+        System.out.println("[" +
+                getSelf().path().name() +      // the name of the current actor
+                "] new coordinator is: " +
+                coordinatorIdx
+        );
+
+        onMsgHeartbeat(null);
     }
 
     ActionListener actionSendHeartbeat = new ActionListener() {
@@ -404,6 +415,7 @@ public class Replica extends AbstractActor {
                 .match(MsgHeartbeat.class, this::onMsgHeartbeat)
                 .match(MsgElection.class, this::onMsgElection)
                 .match(MsgElectionAck.class, this::onMsgElectionAck)
-                .match(MsgCoordinator.class, this::onMsgCoordinator).build();
+                .match(MsgCoordinator.class, this::onMsgCoordinator)
+                .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
 }
