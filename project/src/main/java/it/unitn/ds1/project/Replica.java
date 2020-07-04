@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
     final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
-    final private Integer MAX_RESP_DELAY = 1; // Maximum delay in seconds while sending a message
+    final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
 
     private String v = "init";
     private boolean crashed = false;
@@ -34,6 +34,7 @@ public class Replica extends AbstractActor {
     private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
     private Timer timerCoordinatorHeartbeat;
     private Timer timerHeartbeat;
+    private Timer timerElection;
 
     public Replica(Integer id) {
         this.id = id;
@@ -179,8 +180,8 @@ public class Replica extends AbstractActor {
         this.timerHeartbeat.start();
     }
 
-    private ActorRef getNextReplica() {
-        return replicas[(id + 1) % replicas.length];
+    private ActorRef getNextReplica(Integer idx) {
+        return replicas[(id + idx + 1) % replicas.length];
     }
 
     private void broadcastToReplicas(Serializable message) {
@@ -246,16 +247,26 @@ public class Replica extends AbstractActor {
                 "] Starting coordinator election"
         );
 
-        //TODO: manage crashed replicas
         MsgElection election = new MsgElection();
         election.nodesHistory.put(id, updatesHistory);
-        ActorRef nextReplica = replicas[(id + 1) % replicas.length];
+        nextReplicaTry = 0;
+        ActorRef nextReplica = getNextReplica(nextReplicaTry);
         sendOneMessage(nextReplica, election);
 
+        messageToSend = election;
+
+        this.timerElection = new Timer(this.TIMEOUT, actionElectionTimeout);
+        this.timerElection.setRepeats(false);
+        this.timerElection.start();
     }
 
+    private Integer nextReplicaTry = 0;
+    private Serializable messageToSend;
     private void onMsgElection(MsgElection m) {
-        ActorRef nextReplica = getNextReplica();
+        sendOneMessage(getSender(), new MsgElectionAck());
+
+        nextReplicaTry = 0;
+        ActorRef nextReplica = getNextReplica(nextReplicaTry);
 
         // I'm already in the message, change message type
         if (m.nodesHistory.containsKey(id)) {
@@ -266,11 +277,44 @@ public class Replica extends AbstractActor {
         } else {
             m.nodesHistory.put(id, updatesHistory);
             sendOneMessage(nextReplica, m);
+
+            messageToSend = m;
+
+            if (this.timerElection != null && this.timerElection.isRunning())
+                this.timerElection.stop();
+            this.timerElection = new Timer(this.TIMEOUT, actionElectionTimeout);
+            this.timerElection.setRepeats(false);
+            this.timerElection.start();
         }
     }
 
+    private void onMsgElectionAck(MsgElectionAck m) {
+        if (this.timerElection != null && this.timerElection.isRunning())
+            this.timerElection.stop();
+    }
+
+    ActionListener actionElectionTimeout = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            ActorRef previousReplica = getNextReplica(nextReplicaTry);
+            System.out.println("[" +
+                    getSelf().path().name() +      // the name of the current actor
+                    "] timeout while sending election message to " +
+                    previousReplica.path().name()
+            );
+
+            nextReplicaTry++;
+            ActorRef nextReplica = getNextReplica(nextReplicaTry);
+
+            sendOneMessage(nextReplica, messageToSend);
+
+            timerElection = new Timer(TIMEOUT, actionElectionTimeout);
+            timerElection.setRepeats(false);
+            timerElection.start();
+        }
+    };
+
     private void onMsgCoordinator(MsgCoordinator m) {
-        ActorRef nextReplica = getNextReplica();
+        ActorRef nextReplica = getNextReplica(0);
 
         // decide the new coordinator and, if necessary, forward the coordinator message
         ArrayList<Integer> ids = new ArrayList<>(m.nodesHistory.keySet());
@@ -297,14 +341,7 @@ public class Replica extends AbstractActor {
 
         Integer newCoord = ids.get(0);
 
-        System.out.println("[" +
-                getSelf().path().name() +      // the name of the current actor
-                "] new coordinator is: " +
-                newCoord
-        );
-
         if (!newCoord.equals(coordinatorIdx)) {
-            coordinatorIdx = newCoord;
             sendOneMessage(nextReplica, m);
 
             if (newCoord.equals(id)) {
@@ -322,12 +359,30 @@ public class Replica extends AbstractActor {
                 this.timerCoordinatorHeartbeat.setRepeats(true);
                 this.timerCoordinatorHeartbeat.start();
 
-                //TODO: send SYNCHRONIZATION message and sync replicas
-            }
-            else {
-                onMsgHeartbeat(null);
+                // Send SYNCHRONIZATION message and sync replicas
+                broadcastToReplicas(new MsgSynchronization(this.id));
+
+                for (int repId: m.nodesHistory.keySet()) {
+                    for (int i = 0; i < this.updatesHistory.size(); i++){
+                        if (i >= m.nodesHistory.get(repId).size()){
+                            sendOneMessage(this.replicas[repId], this.updatesHistory.get(i));
+                        }
+                    }
+                }
             }
         }
+    }
+
+    private void onMsgSynchronization(MsgSynchronization m) {
+        coordinatorIdx = m.id;
+
+        System.out.println("[" +
+                getSelf().path().name() +      // the name of the current actor
+                "] new coordinator is: " +
+                coordinatorIdx
+        );
+
+        onMsgHeartbeat(null);
     }
 
     ActionListener actionSendHeartbeat = new ActionListener() {
@@ -359,6 +414,8 @@ public class Replica extends AbstractActor {
                 .match(MsgWriteRequest.class, this::onMsgWriteRequest)
                 .match(MsgHeartbeat.class, this::onMsgHeartbeat)
                 .match(MsgElection.class, this::onMsgElection)
-                .match(MsgCoordinator.class, this::onMsgCoordinator).build();
+                .match(MsgElectionAck.class, this::onMsgElectionAck)
+                .match(MsgCoordinator.class, this::onMsgCoordinator)
+                .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
 }
