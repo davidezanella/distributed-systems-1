@@ -11,7 +11,7 @@ import java.util.Random;
 import java.io.Serializable;
 
 public class Client extends AbstractActor {
-    private ActorRef[] replicas;
+    protected ActorRef[] replicas;
 
     public Client(ActorRef[] replicas) {
         this.replicas = replicas;
@@ -21,12 +21,12 @@ public class Client extends AbstractActor {
         return Props.create(Client.class, () -> new Client(replicas));
     }
 
-    private int getIDRandomReplica() {
+    protected int getIDRandomReplica() {
         int idx = new Random().nextInt(this.replicas.length);
         return idx;
     }
 
-    private Serializable getNewRequest() {
+    protected Serializable getNewRequest() {
         int coin = new Random().nextInt(2);
         if(coin == 0) {
             return new MsgWriteRequest(Utils.generateRandomString(), null);
@@ -50,7 +50,7 @@ public class Client extends AbstractActor {
         
     }
 
-    private void onMsgRWResponse(MsgRWResponse m) {
+    protected void onMsgRWResponse(MsgRWResponse m) {
         System.out.println("[" +
                 getSelf().path().name() +      // the name of the current actor
                 "] received a message from " +
@@ -59,7 +59,7 @@ public class Client extends AbstractActor {
         );
     }
 
-    private void onMsgSelf(MsgSelf m) {
+    protected void onMsgSelf(MsgSelf m) {
         int delaySecs = 0;
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(delaySecs, TimeUnit.SECONDS),

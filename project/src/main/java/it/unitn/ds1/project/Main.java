@@ -8,6 +8,7 @@ import akka.actor.ActorSystem;
 public class Main {
     final static int N_REPLICAS = 3;
     final static int N_CLIENTS = 1;
+    final static int N_SCHEDULED_CLIENTS = 1;
 
     public static void main(String[] args) {
         // Create an actor system named "ds1-project"
@@ -27,6 +28,10 @@ public class Main {
         // Create the clients
         for (int i = 0; i < N_CLIENTS; i++) {
             system.actorOf(Client.props(replicas.toArray(new ActorRef[0])), "client" + i);
+        }
+
+        for (int i = 0; i < N_SCHEDULED_CLIENTS; i++) {
+            system.actorOf(ScheduledClient.props(replicas.toArray(new ActorRef[0])), "scheduled_client" + i);
         }
 
         System.out.println(">>> Press ENTER to exit <<<");
