@@ -7,8 +7,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 
 public class Main {
-    final static int N_REPLICAS = 3;
-    final static int N_CLIENTS = 1;
+    final static int N_REPLICAS = 10;
+    final static int N_CLIENTS = 3;
     final static int N_SCHEDULED_CLIENTS = 1;
 
     public static void main(String[] args) {

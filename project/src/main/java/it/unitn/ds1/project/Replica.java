@@ -35,6 +35,8 @@ public class Replica extends AbstractActor {
     private final HashMap<String, String> pendingUpdates = new HashMap<>(); // waiting for quorum
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>();
 
+    private final HashMap<String, ActorRef> pendingWriteRequest = new HashMap<>(); // used to response to clients
+
     private final HashMap<String, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
     private Timer timerCoordinatorHeartbeat;
@@ -94,6 +96,7 @@ public class Replica extends AbstractActor {
             boolean sent = sendOneMessage(replicas[coordinatorIdx], req);
 
             if (sent) {
+                this.pendingWriteRequest.put(requestId, getSender());
                 Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionBroadcastTimeoutExceeded);
                 timerBroadcastInit.setRepeats(false);
                 this.timersBroadcastInit.put(requestId, timerBroadcastInit);
@@ -123,6 +126,12 @@ public class Replica extends AbstractActor {
             String key = m.e + "-" + m.i;
             this.timersWriteOk.put(key, timerWriteOk);
             timerWriteOk.start();
+
+            if (this.pendingWriteRequest.containsKey(m.requestId)) {
+                ActorRef client = this.pendingWriteRequest.get(m.requestId);
+                this.pendingWriteRequest.remove(m.requestId);
+                this.pendingWriteRequest.put(key, client);
+            }
         }
     }
 
@@ -163,6 +172,12 @@ public class Replica extends AbstractActor {
             // store in the history the write
             this.updatesHistory.add(m);
         }
+
+        if (this.pendingWriteRequest.containsKey(key)) {
+            ActorRef client = this.pendingWriteRequest.get(key);
+            sendOneMessage(client, new MsgWriteResponse(m.value));
+            this.pendingWriteRequest.remove(key);
+        }
     }
 
     private void onMsgHeartbeat(MsgHeartbeat m) {
@@ -171,7 +186,7 @@ public class Replica extends AbstractActor {
         */
         log.info("received " + m + " from " + getSender().path().name());
 
-        if(this.timerHeartbeat != null)
+        if (this.timerHeartbeat != null)
             this.timerHeartbeat.stop();
 
         this.timerHeartbeat = new Timer(this.TIMEOUT, actionHeartbeatTimeoutExceeded);
@@ -249,6 +264,7 @@ public class Replica extends AbstractActor {
 
     private Integer nextReplicaTry = 0;
     private Serializable messageToSend;
+
     private void onMsgElection(MsgElection m) {
         log.info("received " + m + " from " + getSender().path().name());
 
@@ -352,9 +368,9 @@ public class Replica extends AbstractActor {
                 // Send SYNCHRONIZATION message and sync replicas
                 broadcastToReplicas(new MsgSynchronization(this.id));
 
-                for (int repId: m.nodesHistory.keySet()) {
-                    for (int i = 0; i < this.updatesHistory.size(); i++){
-                        if (i >= m.nodesHistory.get(repId).size()){
+                for (int repId : m.nodesHistory.keySet()) {
+                    for (int i = 0; i < this.updatesHistory.size(); i++) {
+                        if (i >= m.nodesHistory.get(repId).size()) {
                             sendOneMessage(this.replicas[repId], this.updatesHistory.get(i));
                         }
                     }
