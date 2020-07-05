@@ -184,6 +184,9 @@ public class Replica extends AbstractActor {
         /*
         Every time it receives a heartbeat from the coordinator, it stops the previous timer and initiates a new one.
         */
+        if (this.crashed)
+            return;
+
         log.info("received " + m + " from " + getSender().path().name());
 
         if (this.timerHeartbeat != null)
@@ -266,6 +269,9 @@ public class Replica extends AbstractActor {
     private Serializable messageToSend;
 
     private void onMsgElection(MsgElection m) {
+        if (this.crashed)
+            return;
+
         log.info("received " + m + " from " + getSender().path().name());
 
         sendOneMessage(getSender(), new MsgElectionAck());
@@ -294,6 +300,9 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgElectionAck(MsgElectionAck m) {
+        if (this.crashed)
+            return;
+
         log.info("received " + m + " from " + getSender().path().name());
 
         if (this.timerElection != null && this.timerElection.isRunning())
@@ -318,6 +327,9 @@ public class Replica extends AbstractActor {
     };
 
     private void onMsgCoordinator(MsgCoordinator m) {
+        if (this.crashed)
+            return;
+
         log.info("received " + m + " from " + getSender().path().name());
 
         ActorRef nextReplica = getNextReplica(0);
@@ -380,6 +392,9 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgSynchronization(MsgSynchronization m) {
+        if (this.crashed)
+            return;
+
         log.info("received " + m + " from " + getSender().path().name() + " - coordId: " + m.id);
 
         coordinatorIdx = m.id;
