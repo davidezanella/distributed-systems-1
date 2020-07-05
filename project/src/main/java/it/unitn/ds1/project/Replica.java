@@ -97,7 +97,7 @@ public class Replica extends AbstractActor {
     }
 
     private void processPendingWriteRequests() {
-        while(!pendingWriteRequestsWhileElection.isEmpty()) {
+        while (!pendingWriteRequestsWhileElection.isEmpty()) {
             MsgWriteRequest m = pendingWriteRequestsWhileElection.pollFirst();
             if (this.id.equals(this.coordinatorIdx)) {
                 this.sequenceNumber++;
@@ -264,6 +264,7 @@ public class Replica extends AbstractActor {
         MsgElection election = new MsgElection();
         MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
         election.nodesHistory.put(id, lastValue);
+        election.seen.put(id, false);
         nextReplicaTry = 0;
         ActorRef nextReplica = getNextReplica(nextReplicaTry);
         sendOneMessage(nextReplica, election);
@@ -321,8 +322,6 @@ public class Replica extends AbstractActor {
             Integer newCoord = ids.get(0);
 
             if (!newCoord.equals(coordinatorIdx)) {
-                sendOneMessage(nextReplica, m);
-
                 if (newCoord.equals(id)) {
                     // set up the new coordinator
 
@@ -354,12 +353,20 @@ public class Replica extends AbstractActor {
                     broadcastToReplicas(sync);
                 } else {
                     // forward if I'm not the new coordinator
-                    sendOneMessage(nextReplica, m);
+                    if (m.seen.get(id).equals(false)) {
+                        // at most one cycle done
+                        m.seen.put(id, true);
+                        sendOneMessage(nextReplica, m);
+                    } else {
+                        // more than one cycle done, restart the election cause the best candidate is crashed
+                        startCoordinatorElection();
+                    }
                 }
             }
         } else {
             MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
             m.nodesHistory.put(id, lastValue);
+            m.seen.put(id, false);
             sendOneMessage(nextReplica, m);
 
             messageToSend = m;
@@ -390,8 +397,8 @@ public class Replica extends AbstractActor {
 
         coordinatorIdx = m.id;
 
-        for(MsgWriteOK write : m.missingUpdates) {
-            if(!this.updatesHistory.contains(write)) {
+        for (MsgWriteOK write : m.missingUpdates) {
+            if (!this.updatesHistory.contains(write)) {
                 this.updatesHistory.add(write);
             }
         }
