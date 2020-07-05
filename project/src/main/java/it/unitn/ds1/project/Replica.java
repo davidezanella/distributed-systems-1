@@ -29,6 +29,8 @@ public class Replica extends AbstractActor {
     final private Integer id;
     private ActorRef[] replicas;
 
+    private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
+
     private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
     private final HashMap<UpdateKey, String> pendingUpdates = new HashMap<>(); // waiting for quorum
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
@@ -37,10 +39,10 @@ public class Replica extends AbstractActor {
         }
     };
 
-    private final HashMap<String, ActorRef> pendingWriteRequest = new HashMap<>(); // used to response to clients
+    private final HashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new HashMap<>(); // used to avoid loosing messages
 
     private final HashMap<UpdateKey, Timer> timersWriteOk = new HashMap<>();
-    private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
+    private final HashMap<String, Timer> timersUpdateRequests = new HashMap<>();
     private Timer timerCoordinatorHeartbeat;
     private Timer timerHeartbeat;
     private Timer timerElection;
@@ -83,30 +85,43 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
+        pendingWriteRequestsWhileElection.add(m);
+
         log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.newValue);
 
-        if (this.id.equals(this.coordinatorIdx)) {
-            this.sequenceNumber++;
+        if (this.inElection) {
+            return;
+        }
 
-            UpdateKey key = new UpdateKey(this.epochNumber, this.sequenceNumber);
-            this.AckReceived.put(key, 0);
-            this.pendingUpdates.put(key, m.newValue);
-            final MsgUpdate update = new MsgUpdate(m.newValue, key, m.requestId);
+        processPendingWriteRequests();
+    }
 
-            // Send a broadcast to all the replicas
-            broadcastToReplicas(update);
-        } else {
-            String requestId = Utils.generateRandomString();
-            MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
-            // forward the request to the coordinator
-            boolean sent = sendOneMessage(replicas[coordinatorIdx], req);
+    private void processPendingWriteRequests() {
+        while(!pendingWriteRequestsWhileElection.isEmpty()) {
+            MsgWriteRequest m = pendingWriteRequestsWhileElection.pollFirst();
+            if (this.id.equals(this.coordinatorIdx)) {
+                this.sequenceNumber++;
 
-            if (sent) {
-                this.pendingWriteRequest.put(requestId, getSender());
-                Timer timerBroadcastInit = new Timer(this.TIMEOUT, actionBroadcastTimeoutExceeded);
-                timerBroadcastInit.setRepeats(false);
-                this.timersBroadcastInit.put(requestId, timerBroadcastInit);
-                timerBroadcastInit.start();
+                UpdateKey key = new UpdateKey(this.epochNumber, this.sequenceNumber);
+                this.AckReceived.put(key, 0);
+                this.pendingUpdates.put(key, m.newValue);
+                final MsgUpdate update = new MsgUpdate(m.newValue, key, m.requestId);
+
+                // Send a broadcast to all the replicas
+                broadcastToReplicas(update);
+            } else {
+                String requestId = Utils.generateRandomString();
+                MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
+                // forward the request to the coordinator
+                boolean sent = sendOneMessage(replicas[coordinatorIdx], req);
+
+                if (sent) {
+                    this.pendingWriteRequestMsg.put(requestId, m);
+                    Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(requestId));
+                    timerUpdate.setRepeats(false);
+                    this.timersUpdateRequests.put(requestId, timerUpdate);
+                    timerUpdate.start();
+                }
             }
         }
     }
@@ -117,9 +132,9 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
-        if (this.timersBroadcastInit.containsKey(m.requestId)) {
-            this.timersBroadcastInit.get(m.requestId).stop();
-            this.timersBroadcastInit.remove(m.requestId);
+        if (this.timersUpdateRequests.containsKey(m.requestId)) {
+            this.timersUpdateRequests.get(m.requestId).stop();
+            this.timersUpdateRequests.remove(m.requestId);
         }
 
         // respond to the coordinator with an ACK
@@ -131,12 +146,6 @@ public class Replica extends AbstractActor {
             timerWriteOk.setRepeats(false);
             this.timersWriteOk.put(m.key, timerWriteOk);
             timerWriteOk.start();
-
-            if (this.pendingWriteRequest.containsKey(m.requestId)) {
-                ActorRef client = this.pendingWriteRequest.get(m.requestId);
-                this.pendingWriteRequest.remove(m.requestId);
-                this.pendingWriteRequest.put(m.key.toString(), client);
-            }
         }
     }
 
@@ -183,12 +192,6 @@ public class Replica extends AbstractActor {
 
                 log.info("applied " + msg.key.toString() + " - value: " + msg.value);
 
-                if (this.pendingWriteRequest.containsKey(m.key.toString())) {
-                    ActorRef client = this.pendingWriteRequest.get(m.key.toString());
-                    sendOneMessage(client, new MsgWriteResponse(msg.value));
-                    this.pendingWriteRequest.remove(m.key.toString());
-                }
-
                 writeOkQueue.remove(msg);
             }
         }
@@ -196,10 +199,10 @@ public class Replica extends AbstractActor {
         MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
         this.v = lastApplied.value;
 
-        /*
+
         if (this.id == 9)
             this.crashed = true;
-         */
+
     }
 
     private void onMsgHeartbeat(MsgHeartbeat m) {
@@ -248,39 +251,6 @@ public class Replica extends AbstractActor {
         );
         return true;
     }
-
-    ActionListener actionWriteOKTimeoutExceeded = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
-            if (crashed)
-                return;
-
-            log.info("timeout WriteOK");
-
-            startCoordinatorElection();
-        }
-    };
-
-    ActionListener actionBroadcastTimeoutExceeded = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
-            if (crashed)
-                return;
-
-            log.info("timeout Broadcast");
-
-            startCoordinatorElection();
-        }
-    };
-
-    ActionListener actionHeartbeatTimeoutExceeded = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
-            if (crashed)
-                return;
-
-            log.info("timeout Heartbeat");
-
-            startCoordinatorElection();
-        }
-    };
 
     void startCoordinatorElection() {
         if (crashed)
@@ -402,34 +372,14 @@ public class Replica extends AbstractActor {
     }
 
     private void onMsgElectionAck(MsgElectionAck m) {
+        if (this.timerElection != null && this.timerElection.isRunning())
+            this.timerElection.stop();
+
         if (this.crashed)
             return;
 
         log.info("received " + m + " from " + getSender().path().name());
-
-        if (this.timerElection != null && this.timerElection.isRunning())
-            this.timerElection.stop();
     }
-
-    ActionListener actionElectionTimeout = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
-            if (crashed)
-                return;
-
-            ActorRef previousReplica = getNextReplica(nextReplicaTry);
-
-            log.info("timeout Election contacting " + previousReplica.path().name());
-
-            nextReplicaTry++;
-            ActorRef nextReplica = getNextReplica(nextReplicaTry);
-
-            sendOneMessage(nextReplica, messageToSend);
-
-            timerElection = new Timer(TIMEOUT, actionElectionTimeout);
-            timerElection.setRepeats(false);
-            timerElection.start();
-        }
-    };
 
     private void onMsgSynchronization(MsgSynchronization m) {
         if (this.crashed)
@@ -446,6 +396,7 @@ public class Replica extends AbstractActor {
         }
 
         this.inElection = false;
+        processPendingWriteRequests();
 
         onMsgHeartbeat(null);
     }
@@ -482,4 +433,67 @@ public class Replica extends AbstractActor {
                 .match(MsgElectionAck.class, this::onMsgElectionAck)
                 .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
+
+
+    ActionListener actionWriteOKTimeoutExceeded = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
+            log.info("timeout WriteOK");
+
+            startCoordinatorElection();
+        }
+    };
+
+    private class actionUpdateTimeoutExceeded implements ActionListener {
+        private String requestId;
+
+        public actionUpdateTimeoutExceeded(String requestId) {
+            this.requestId = requestId;
+        }
+
+        public void actionPerformed(ActionEvent e) {
+            if (crashed)
+                return;
+
+            log.info("timeout Update, adding message to queue");
+
+            MsgWriteRequest m = pendingWriteRequestMsg.get(requestId);
+            pendingWriteRequestsWhileElection.add(m);
+
+            startCoordinatorElection();
+        }
+    }
+
+    ActionListener actionHeartbeatTimeoutExceeded = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
+            log.info("timeout Heartbeat");
+
+            startCoordinatorElection();
+        }
+    };
+
+    ActionListener actionElectionTimeout = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
+            ActorRef previousReplica = getNextReplica(nextReplicaTry);
+
+            log.info("timeout Election contacting " + previousReplica.path().name());
+
+            nextReplicaTry++;
+            ActorRef nextReplica = getNextReplica(nextReplicaTry);
+
+            sendOneMessage(nextReplica, messageToSend);
+
+            timerElection = new Timer(TIMEOUT, actionElectionTimeout);
+            timerElection.setRepeats(false);
+            timerElection.start();
+        }
+    };
 }
