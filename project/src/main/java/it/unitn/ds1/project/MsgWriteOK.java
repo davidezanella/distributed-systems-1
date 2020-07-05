@@ -4,19 +4,17 @@ import java.io.Serializable;
 
 public class MsgWriteOK implements Serializable, Comparable<MsgWriteOK>  {
     public final String value;
-    public final Integer e; // epoch number
-    public final Integer i; // sequence number
-    public MsgWriteOK(String value, Integer e, Integer i) {
-        this.e = e;
-        this.i = i;
+    public final UpdateKey key;
+    public MsgWriteOK(String value, UpdateKey key) {
+        this.key = key;
         this.value = value;
     }
 
     @Override
     public int compareTo(MsgWriteOK o) {
-        int res = this.e.compareTo(o.e);
+        int res = this.key.epoch.compareTo(o.key.epoch);
         if (res == 0) {
-            res = this.i.compareTo(o.i);
+            res = this.key.sequence.compareTo(o.key.sequence);
         }
         return res;
     }

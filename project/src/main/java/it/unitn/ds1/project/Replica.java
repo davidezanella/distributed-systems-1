@@ -18,8 +18,8 @@ import java.util.concurrent.TimeUnit;
 public class Replica extends AbstractActor {
     DiagnosticLoggingAdapter log = Logging.getLogger(this);
 
-    final private Integer TIMEOUT = 6000; // Timeout value in milliseconds
-    final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
+    final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
+    final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
 
     private String v = "init";
     private boolean crashed = false;
@@ -29,17 +29,17 @@ public class Replica extends AbstractActor {
     final private Integer id;
     private ActorRef[] replicas;
 
-    private final HashMap<String, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
-    private final HashMap<String, String> pendingUpdates = new HashMap<>(); // waiting for quorum
+    private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
+    private final HashMap<UpdateKey, String> pendingUpdates = new HashMap<>(); // waiting for quorum
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
         {
-            add(new MsgWriteOK("init", -1, -1));
+            add(new MsgWriteOK("init", new UpdateKey(-1, -1)));
         }
     };
 
     private final HashMap<String, ActorRef> pendingWriteRequest = new HashMap<>(); // used to response to clients
 
-    private final HashMap<String, Timer> timersWriteOk = new HashMap<>();
+    private final HashMap<UpdateKey, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersBroadcastInit = new HashMap<>();
     private Timer timerCoordinatorHeartbeat;
     private Timer timerHeartbeat;
@@ -88,10 +88,10 @@ public class Replica extends AbstractActor {
         if (this.id.equals(this.coordinatorIdx)) {
             this.sequenceNumber++;
 
-            String key = this.epochNumber + "-" + this.sequenceNumber;
+            UpdateKey key = new UpdateKey(this.epochNumber, this.sequenceNumber);
             this.AckReceived.put(key, 0);
             this.pendingUpdates.put(key, m.newValue);
-            final MsgUpdate update = new MsgUpdate(m.newValue, this.epochNumber, this.sequenceNumber, m.requestId);
+            final MsgUpdate update = new MsgUpdate(m.newValue, key, m.requestId);
 
             // Send a broadcast to all the replicas
             broadcastToReplicas(update);
@@ -115,7 +115,7 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i + " - value: " + m.value);
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
         if (this.timersBroadcastInit.containsKey(m.requestId)) {
             this.timersBroadcastInit.get(m.requestId).stop();
@@ -123,20 +123,19 @@ public class Replica extends AbstractActor {
         }
 
         // respond to the coordinator with an ACK
-        MsgAck ack = new MsgAck(m.e, m.i);
+        MsgAck ack = new MsgAck(m.key);
         boolean sent = sendOneMessage(getSender(), ack);
 
         if (sent) {
             Timer timerWriteOk = new Timer(this.TIMEOUT, actionWriteOKTimeoutExceeded);
             timerWriteOk.setRepeats(false);
-            String key = m.e + "-" + m.i;
-            this.timersWriteOk.put(key, timerWriteOk);
+            this.timersWriteOk.put(m.key, timerWriteOk);
             timerWriteOk.start();
 
             if (this.pendingWriteRequest.containsKey(m.requestId)) {
                 ActorRef client = this.pendingWriteRequest.get(m.requestId);
                 this.pendingWriteRequest.remove(m.requestId);
-                this.pendingWriteRequest.put(key, client);
+                this.pendingWriteRequest.put(m.key.toString(), client);
             }
         }
     }
@@ -145,20 +144,19 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i);
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString());
 
         if (!this.id.equals(this.coordinatorIdx)) {
             throw new Exception("Not coordinator replica receives ACK message!");
         }
 
-        String key = m.e + "-" + m.i;
-        if (this.AckReceived.containsKey(key)) {
-            int num = this.AckReceived.get(key) + 1;
-            this.AckReceived.put(key, num);
+        if (this.AckReceived.containsKey(m.key)) {
+            int num = this.AckReceived.get(m.key) + 1;
+            this.AckReceived.put(m.key, num);
             if (num >= Math.floor(this.replicas.length / 2.0) + 1) {
-                final MsgWriteOK okMsg = new MsgWriteOK(this.pendingUpdates.get(key), m.e, m.i);
+                final MsgWriteOK okMsg = new MsgWriteOK(this.pendingUpdates.get(m.key), m.key);
                 broadcastToReplicas(okMsg);
-                this.AckReceived.remove(key);
+                this.AckReceived.remove(m.key);
             }
         }
     }
@@ -167,28 +165,28 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i + " - value: " + m.value);
+        log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
         writeOkQueue.add(m);
 
         for (MsgWriteOK msg: writeOkQueue) {
             MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
-            if (msg.e > lastApplied.e || (msg.e.equals(lastApplied.e) && msg.i.equals(lastApplied.i + 1))) {
-                String key = msg.e + "-" + msg.i;
-                if (this.timersWriteOk.containsKey(key)) {
-                    this.timersWriteOk.get(key).stop();
-                    this.timersWriteOk.remove(key);
+            if (msg.key.epoch > lastApplied.key.epoch ||
+                    (msg.key.epoch.equals(lastApplied.key.epoch) && msg.key.sequence.equals(lastApplied.key.sequence + 1))) {
+                if (this.timersWriteOk.containsKey(m.key)) {
+                    this.timersWriteOk.get(m.key).stop();
+                    this.timersWriteOk.remove(m.key);
 
                     // store in the history the write
                     this.updatesHistory.add(msg);
 
-                    log.info("applied " + msg.e + ":" + msg.i + " - value: " + msg.value);
+                    log.info("applied " + msg.key.toString() + " - value: " + msg.value);
                 }
 
-                if (this.pendingWriteRequest.containsKey(key)) {
-                    ActorRef client = this.pendingWriteRequest.get(key);
+                if (this.pendingWriteRequest.containsKey(m.key.toString())) {
+                    ActorRef client = this.pendingWriteRequest.get(m.key.toString());
                     sendOneMessage(client, new MsgWriteResponse(msg.value));
-                    this.pendingWriteRequest.remove(key);
+                    this.pendingWriteRequest.remove(m.key.toString());
                 }
 
                 writeOkQueue.remove(msg);
@@ -285,12 +283,16 @@ public class Replica extends AbstractActor {
     };
 
     void startCoordinatorElection() {
+        if (crashed)
+            return;
+
         if (this.inElection) // an election is already running
             return;
 
         this.inElection = true;
         MsgElection election = new MsgElection();
-        election.nodesHistory.put(id, updatesHistory);
+        MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
+        election.nodesHistory.put(id, lastValue);
         nextReplicaTry = 0;
         ActorRef nextReplica = getNextReplica(nextReplicaTry);
         sendOneMessage(nextReplica, election);
@@ -325,14 +327,67 @@ public class Replica extends AbstractActor {
         nextReplicaTry = 0;
         ActorRef nextReplica = getNextReplica(nextReplicaTry);
 
-        // I'm already in the message, change message type
+        // I'm already in the message
         if (m.nodesHistory.containsKey(id)) {
-            // forward the coordinator message
-            MsgCoordinator coord = new MsgCoordinator();
-            coord.nodesHistory = m.nodesHistory;
-            sendOneMessage(nextReplica, coord);
+            ArrayList<Integer> ids = new ArrayList<>(m.nodesHistory.keySet());
+            ids.sort(new Comparator<Integer>() {
+                @Override
+                public int compare(Integer id1, Integer id2) {
+                    int res = 0;
+                    MsgWriteOK ls1 = m.nodesHistory.get(id1);
+                    MsgWriteOK ls2 = m.nodesHistory.get(id2);
+                    res = ls1.key.epoch.compareTo(ls2.key.epoch) * -1;
+                    if (res == 0) {
+                        res = ls1.key.sequence.compareTo(ls2.key.sequence) * -1;
+                    }
+                    if (res == 0) {
+                        res = id1.compareTo(id2) * -1;
+                    }
+                    return res;
+                }
+            });
+
+            Integer newCoord = ids.get(0);
+
+            if (!newCoord.equals(coordinatorIdx)) {
+                sendOneMessage(nextReplica, m);
+
+                if (newCoord.equals(id)) {
+                    // set up the new coordinator
+
+                    if (this.updatesHistory.size() > 0) {
+                        this.epochNumber = this.updatesHistory.get(this.updatesHistory.size() - 1).key.epoch + 1;
+                        this.sequenceNumber = 0;
+                    }
+
+                    if (this.timerHeartbeat != null)
+                        this.timerHeartbeat.stop(); //not needed since now it's the coordinator
+
+                    this.timerCoordinatorHeartbeat = new Timer(this.TIMEOUT / 4, actionSendHeartbeat);
+                    this.timerCoordinatorHeartbeat.setRepeats(true);
+                    this.timerCoordinatorHeartbeat.start();
+
+                    // Send SYNCHRONIZATION message and sync replicas
+                    broadcastToReplicas(new MsgSynchronization(this.id));
+
+                    for (int repId : m.nodesHistory.keySet()) {
+                        for (int i = 0; i < this.updatesHistory.size(); i++) {
+                            MsgWriteOK write = this.updatesHistory.get(i);
+                            if (write.key.epoch.equals(this.epochNumber - 1)
+                                    && write.key.sequence > m.nodesHistory.get(repId).key.sequence) {
+                                sendOneMessage(this.replicas[repId], write);
+                            }
+                        }
+                    }
+                }
+                else {
+                    // forward if I'm not the new coordinator
+                    sendOneMessage(nextReplica, m);
+                }
+            }
         } else {
-            m.nodesHistory.put(id, updatesHistory);
+            MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
+            m.nodesHistory.put(id, lastValue);
             sendOneMessage(nextReplica, m);
 
             messageToSend = m;
@@ -374,71 +429,6 @@ public class Replica extends AbstractActor {
             timerElection.start();
         }
     };
-
-    private void onMsgCoordinator(MsgCoordinator m) {
-        if (this.crashed || !this.inElection)
-            return;
-
-        log.info("received " + m + " from " + getSender().path().name());
-
-        ActorRef nextReplica = getNextReplica(0);
-
-        // decide the new coordinator and, if necessary, forward the coordinator message
-        ArrayList<Integer> ids = new ArrayList<>(m.nodesHistory.keySet());
-        ids.sort(new Comparator<Integer>() {
-            @Override
-            public int compare(Integer id1, Integer id2) {
-                ArrayList<MsgWriteOK> history1 = m.nodesHistory.get(id1);
-                ArrayList<MsgWriteOK> history2 = m.nodesHistory.get(id2);
-                int res = 0;
-                if (history1.size() > 0 && history2.size() > 0) {
-                    MsgWriteOK ls1 = history1.get(history1.size() - 1);
-                    MsgWriteOK ls2 = history2.get(history2.size() - 1);
-                    res = ls1.e.compareTo(ls2.e) * -1;
-                    if (res == 0) {
-                        res = ls1.i.compareTo(ls2.i) * -1;
-                    }
-                }
-                if (res == 0) {
-                    res = id1.compareTo(id2) * -1;
-                }
-                return res;
-            }
-        });
-
-        Integer newCoord = ids.get(0);
-
-        if (!newCoord.equals(coordinatorIdx)) {
-            sendOneMessage(nextReplica, m);
-
-            if (newCoord.equals(id)) {
-                // set up the new coordinator
-
-                if (this.updatesHistory.size() > 0) {
-                    this.epochNumber = this.updatesHistory.get(this.updatesHistory.size() - 1).e + 1;
-                    this.sequenceNumber = 0;
-                }
-
-                if (this.timerHeartbeat != null)
-                    this.timerHeartbeat.stop(); //not needed since now it's the coordinator
-
-                this.timerCoordinatorHeartbeat = new Timer(this.TIMEOUT / 4, actionSendHeartbeat);
-                this.timerCoordinatorHeartbeat.setRepeats(true);
-                this.timerCoordinatorHeartbeat.start();
-
-                // Send SYNCHRONIZATION message and sync replicas
-                broadcastToReplicas(new MsgSynchronization(this.id));
-
-                for (int repId : m.nodesHistory.keySet()) {
-                    for (int i = 0; i < this.updatesHistory.size(); i++) {
-                        if (i >= m.nodesHistory.get(repId).size()) {
-                            sendOneMessage(this.replicas[repId], this.updatesHistory.get(i));
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     private void onMsgSynchronization(MsgSynchronization m) {
         if (this.crashed)
@@ -483,7 +473,6 @@ public class Replica extends AbstractActor {
                 .match(MsgHeartbeat.class, this::onMsgHeartbeat)
                 .match(MsgElection.class, this::onMsgElection)
                 .match(MsgElectionAck.class, this::onMsgElectionAck)
-                .match(MsgCoordinator.class, this::onMsgCoordinator)
                 .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
 }
