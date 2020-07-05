@@ -29,17 +29,21 @@ public class Replica extends AbstractActor {
     final private Integer id;
     private ActorRef[] replicas;
 
+    // used to store the MsgWriteRequests while an election is going on
     private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
 
-    private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
-    private final HashMap<UpdateKey, String> pendingUpdates = new HashMap<>(); // waiting for quorum
+    // used to count the ACKs received in the UPDATE phase
+    private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>();
+    // used to keep the new value while waiting for the quorum
+    private final HashMap<UpdateKey, String> pendingUpdates = new HashMap<>();
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
         {
             add(new MsgWriteOK("init", new UpdateKey(-1, -1)));
         }
     };
 
-    private final HashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new HashMap<>(); // used to avoid loosing messages
+    // used to keep MsgWriteRequests between the Broadcast and Update phases
+    private final HashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new HashMap<>();
 
     private final HashMap<UpdateKey, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersUpdateRequests = new HashMap<>();
@@ -117,7 +121,7 @@ public class Replica extends AbstractActor {
 
                 if (sent) {
                     this.pendingWriteRequestMsg.put(requestId, m);
-                    Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(requestId));
+                    Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(m));
                     timerUpdate.setRepeats(false);
                     this.timersUpdateRequests.put(requestId, timerUpdate);
                     timerUpdate.start();
@@ -132,6 +136,9 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
+        MsgWriteRequest mReq = pendingWriteRequestMsg.get(m.requestId);
+        pendingWriteRequestMsg.remove(m.requestId);
+
         if (this.timersUpdateRequests.containsKey(m.requestId)) {
             this.timersUpdateRequests.get(m.requestId).stop();
             this.timersUpdateRequests.remove(m.requestId);
@@ -142,7 +149,7 @@ public class Replica extends AbstractActor {
         boolean sent = sendOneMessage(getSender(), ack);
 
         if (sent) {
-            Timer timerWriteOk = new Timer(this.TIMEOUT, actionWriteOKTimeoutExceeded);
+            Timer timerWriteOk = new Timer(this.TIMEOUT, new actionWriteOKTimeoutExceeded(mReq));
             timerWriteOk.setRepeats(false);
             this.timersWriteOk.put(m.key, timerWriteOk);
             timerWriteOk.start();
@@ -442,23 +449,30 @@ public class Replica extends AbstractActor {
                 .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
 
+    private class actionWriteOKTimeoutExceeded implements ActionListener {
+        private MsgWriteRequest mReq;
 
-    ActionListener actionWriteOKTimeoutExceeded = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
+        public actionWriteOKTimeoutExceeded(MsgWriteRequest mReq) {
+            this.mReq = mReq;
+        }
+
+        public void actionPerformed(ActionEvent e) {
             if (crashed)
                 return;
 
-            log.info("timeout WriteOK");
+            log.info("timeout WriteOK, adding message to queue");
+
+            pendingWriteRequestsWhileElection.add(this.mReq);
 
             startCoordinatorElection();
         }
-    };
+    }
 
     private class actionUpdateTimeoutExceeded implements ActionListener {
-        private String requestId;
+        private MsgWriteRequest mReq;
 
-        public actionUpdateTimeoutExceeded(String requestId) {
-            this.requestId = requestId;
+        public actionUpdateTimeoutExceeded(MsgWriteRequest mReq) {
+            this.mReq = mReq;
         }
 
         public void actionPerformed(ActionEvent e) {
@@ -467,8 +481,7 @@ public class Replica extends AbstractActor {
 
             log.info("timeout Update, adding message to queue");
 
-            MsgWriteRequest m = pendingWriteRequestMsg.get(requestId);
-            pendingWriteRequestsWhileElection.add(m);
+            pendingWriteRequestsWhileElection.add(this.mReq);
 
             startCoordinatorElection();
         }

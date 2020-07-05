@@ -9,7 +9,7 @@ import java.util.ArrayList;
 public class Main {
     final static int N_REPLICAS = 10;
     final static int N_CLIENTS = 4;
-    final static int N_SCHEDULED_CLIENTS = 1;
+    final static int N_SCHEDULED_CLIENTS = 0;
 
     public static void main(String[] args) {
         // Create an actor system named "ds1-project"
