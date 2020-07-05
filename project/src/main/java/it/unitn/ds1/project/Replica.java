@@ -212,7 +212,8 @@ public class Replica extends AbstractActor {
         if (this.crashed)
             return;
 
-        log.info("received " + m + " from " + getSender().path().name());
+        if (m != null)
+            log.info("received " + m + " from " + getSender().path().name());
 
         if (this.timerHeartbeat != null)
             this.timerHeartbeat.stop();
