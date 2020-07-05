@@ -20,12 +20,12 @@ import java.util.concurrent.TimeUnit;
 public class Replica extends AbstractActor {
     DiagnosticLoggingAdapter log = Logging.getLogger(this);
 
-    final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
-    final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
+    final private Integer TIMEOUT = 6000; // Timeout value in milliseconds
+    final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
 
     private String v = "init";
     private boolean crashed = false;
-    private Integer coordinatorIdx;
+    private Integer coordinatorIdx = 9;
     private Integer sequenceNumber = 0;
     private Integer epochNumber = 0;
     final private Integer id;
@@ -43,6 +43,8 @@ public class Replica extends AbstractActor {
     private Timer timerHeartbeat;
     private Timer timerElection;
 
+    private boolean inElection = false;
+
     public Replica(Integer id) {
         Map<String, Object> mdc = new HashMap<String, Object>();
         mdc.put("elementId", getSelf().path().name());
@@ -59,7 +61,7 @@ public class Replica extends AbstractActor {
         this.replicas = m.replicas;
         if (this.coordinatorIdx == null) {
             // init coordinator election
-            actionHeartbeatTimeoutExceeded.actionPerformed(null);
+            startCoordinatorElection();
         }
     }
 
@@ -173,6 +175,11 @@ public class Replica extends AbstractActor {
             this.updatesHistory.add(m);
         }
 
+        /*
+        if (this.id == 9)
+            this.crashed = true;
+         */
+
         if (this.pendingWriteRequest.containsKey(key)) {
             ActorRef client = this.pendingWriteRequest.get(key);
             sendOneMessage(client, new MsgWriteResponse(m.value));
@@ -229,6 +236,9 @@ public class Replica extends AbstractActor {
 
     ActionListener actionWriteOKTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
             log.info("timeout WriteOK");
 
             startCoordinatorElection();
@@ -237,6 +247,9 @@ public class Replica extends AbstractActor {
 
     ActionListener actionBroadcastTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
             log.info("timeout Broadcast");
 
             startCoordinatorElection();
@@ -245,6 +258,9 @@ public class Replica extends AbstractActor {
 
     ActionListener actionHeartbeatTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
             log.info("timeout Heartbeat");
 
             startCoordinatorElection();
@@ -252,6 +268,10 @@ public class Replica extends AbstractActor {
     };
 
     void startCoordinatorElection() {
+        if (this.inElection) // an election is already running
+            return;
+
+        this.inElection = true;
         MsgElection election = new MsgElection();
         election.nodesHistory.put(id, updatesHistory);
         nextReplicaTry = 0;
@@ -271,6 +291,15 @@ public class Replica extends AbstractActor {
     private void onMsgElection(MsgElection m) {
         if (this.crashed)
             return;
+
+        /*
+        if (this.id == 4){
+            this.crashed = true;
+            return;
+        }
+         */
+
+        this.inElection = true;
 
         log.info("received " + m + " from " + getSender().path().name());
 
@@ -311,6 +340,9 @@ public class Replica extends AbstractActor {
 
     ActionListener actionElectionTimeout = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
             ActorRef previousReplica = getNextReplica(nextReplicaTry);
 
             log.info("timeout Election contacting " + previousReplica.path().name());
@@ -327,7 +359,7 @@ public class Replica extends AbstractActor {
     };
 
     private void onMsgCoordinator(MsgCoordinator m) {
-        if (this.crashed)
+        if (this.crashed || !this.inElection)
             return;
 
         log.info("received " + m + " from " + getSender().path().name());
@@ -399,11 +431,16 @@ public class Replica extends AbstractActor {
 
         coordinatorIdx = m.id;
 
+        this.inElection = false;
+
         onMsgHeartbeat(null);
     }
 
     ActionListener actionSendHeartbeat = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
             broadcastToReplicas(new MsgHeartbeat());
         }
     };

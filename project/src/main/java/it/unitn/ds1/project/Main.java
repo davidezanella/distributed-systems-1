@@ -8,14 +8,12 @@ import java.util.ArrayList;
 
 public class Main {
     final static int N_REPLICAS = 10;
-    final static int N_CLIENTS = 3;
+    final static int N_CLIENTS = 0;
     final static int N_SCHEDULED_CLIENTS = 1;
 
     public static void main(String[] args) {
         // Create an actor system named "ds1-project"
         final ActorSystem system = ActorSystem.create("ds1-project");
-
-        //appConfig.withFallback(ConfigFactory.defaultReference(classLoader));
 
         // Create the replicas
         final ArrayList<ActorRef> replicas = new ArrayList<ActorRef>();

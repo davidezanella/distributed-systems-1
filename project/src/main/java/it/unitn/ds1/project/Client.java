@@ -15,8 +15,9 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 public class Client extends AbstractActor {
-    private ActorRef[] replicas;
+    ActorRef[] replicas;
     DiagnosticLoggingAdapter log = Logging.getLogger(this);
+    final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
 
     public Client(ActorRef[] replicas) {
         Map<String, Object> mdc = new HashMap<String, Object>();
@@ -29,12 +30,12 @@ public class Client extends AbstractActor {
         return Props.create(Client.class, () -> new Client(replicas));
     }
 
-    private int getIDRandomReplica() {
+    protected int getIDRandomReplica() {
         int idx = new Random().nextInt(this.replicas.length);
         return idx;
     }
 
-    private Serializable getNewRequest() {
+    protected Serializable getNewRequest() {
         int coin = new Random().nextInt(2);
         if(coin == 0) {
             return new MsgWriteRequest(Utils.generateRandomString(), null);
@@ -45,7 +46,6 @@ public class Client extends AbstractActor {
 
     @Override
     public void preStart() {
-        
         // Create a timer that will periodically send a message to the receiver actor
         Cancellable timer = getContext().system().scheduler().scheduleWithFixedDelay(
                 Duration.create(5, TimeUnit.SECONDS),               // when to start generating messages
@@ -58,19 +58,19 @@ public class Client extends AbstractActor {
         
     }
 
-    private void onMsgReadResponse(MsgReadResponse m) {
+    protected void onMsgReadResponse(MsgReadResponse m) {
         log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.value);
     }
 
-    private void onMsgWriteResponse(MsgWriteResponse m) {
+    protected void onMsgWriteResponse(MsgWriteResponse m) {
         log.info("received " + m + " from " + getSender().path().name() + " - value: " + m.value);
     }
 
-    private void onMsgSelf(MsgSelf m) {
+    protected void onMsgSelf(MsgSelf m) {
         ActorRef dest = this.replicas[getIDRandomReplica()];
         Serializable req = getNewRequest();
 
-        int delaySecs = 0;
+        int delaySecs = (int) (Math.random() * MAX_RESP_DELAY);
         getContext().system().scheduler().scheduleOnce(
                 Duration.create(delaySecs, TimeUnit.SECONDS),
                 dest,
