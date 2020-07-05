@@ -167,21 +167,21 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
+        if (this.timersWriteOk.containsKey(m.key)) {
+            this.timersWriteOk.get(m.key).stop();
+            this.timersWriteOk.remove(m.key);
+        }
+
         writeOkQueue.add(m);
 
         for (MsgWriteOK msg: writeOkQueue) {
             MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
             if (msg.key.epoch > lastApplied.key.epoch ||
                     (msg.key.epoch.equals(lastApplied.key.epoch) && msg.key.sequence.equals(lastApplied.key.sequence + 1))) {
-                if (this.timersWriteOk.containsKey(m.key)) {
-                    this.timersWriteOk.get(m.key).stop();
-                    this.timersWriteOk.remove(m.key);
+                // store in the history the write
+                this.updatesHistory.add(msg);
 
-                    // store in the history the write
-                    this.updatesHistory.add(msg);
-
-                    log.info("applied " + msg.key.toString() + " - value: " + msg.value);
-                }
+                log.info("applied " + msg.key.toString() + " - value: " + msg.value);
 
                 if (this.pendingWriteRequest.containsKey(m.key.toString())) {
                     ActorRef client = this.pendingWriteRequest.get(m.key.toString());
