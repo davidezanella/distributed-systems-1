@@ -18,6 +18,8 @@ public class Client extends AbstractActor {
     ActorRef[] replicas;
     DiagnosticLoggingAdapter log = Logging.getLogger(this);
     final private Integer MAX_RESP_DELAY = 4; // Maximum delay in seconds while sending a message
+    private Integer defaulReplica;
+    private boolean keepSameReplica = false;
 
     public Client(ActorRef[] replicas) {
         Map<String, Object> mdc = new HashMap<String, Object>();
@@ -32,6 +34,10 @@ public class Client extends AbstractActor {
 
     protected int getIDRandomReplica() {
         int idx = new Random().nextInt(this.replicas.length);
+        if (defaulReplica == null)
+            defaulReplica = idx;
+        if (keepSameReplica)
+            return defaulReplica;
         return idx;
     }
 
