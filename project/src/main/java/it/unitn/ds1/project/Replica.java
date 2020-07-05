@@ -174,8 +174,8 @@ public class Replica extends AbstractActor {
 
         writeOkQueue.add(m);
 
-        for (MsgWriteOK msg: writeOkQueue) {
-            MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
+        for (MsgWriteOK msg : writeOkQueue) {
+            MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
             if (msg.key.epoch > lastApplied.key.epoch ||
                     (msg.key.epoch.equals(lastApplied.key.epoch) && msg.key.sequence.equals(lastApplied.key.sequence + 1))) {
                 // store in the history the write
@@ -193,7 +193,7 @@ public class Replica extends AbstractActor {
             }
         }
 
-        MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
+        MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
         this.v = lastApplied.value;
 
         /*
@@ -368,19 +368,20 @@ public class Replica extends AbstractActor {
                     this.timerCoordinatorHeartbeat.start();
 
                     // Send SYNCHRONIZATION message and sync replicas
-                    broadcastToReplicas(new MsgSynchronization(this.id));
+                    MsgSynchronization sync = new MsgSynchronization(this.id);
 
                     for (int repId : m.nodesHistory.keySet()) {
-                        for (int i = 0; i < this.updatesHistory.size(); i++) {
-                            MsgWriteOK write = this.updatesHistory.get(i);
+                        for (MsgWriteOK write : this.updatesHistory) {
                             if (write.key.epoch.equals(this.epochNumber - 1)
                                     && write.key.sequence > m.nodesHistory.get(repId).key.sequence) {
-                                sendOneMessage(this.replicas[repId], write);
+                                if (!sync.missingUpdates.contains(write))
+                                    sync.missingUpdates.add(write);
                             }
                         }
                     }
-                }
-                else {
+
+                    broadcastToReplicas(sync);
+                } else {
                     // forward if I'm not the new coordinator
                     sendOneMessage(nextReplica, m);
                 }
@@ -437,6 +438,12 @@ public class Replica extends AbstractActor {
         log.info("received " + m + " from " + getSender().path().name() + " - coordId: " + m.id);
 
         coordinatorIdx = m.id;
+
+        for(MsgWriteOK write : m.missingUpdates) {
+            if(!this.updatesHistory.contains(write)) {
+                this.updatesHistory.add(write);
+            }
+        }
 
         this.inElection = false;
 
