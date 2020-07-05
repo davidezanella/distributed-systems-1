@@ -7,14 +7,12 @@ import akka.event.DiagnosticLoggingAdapter;
 import akka.event.Logging;
 import scala.concurrent.duration.Duration;
 
-import javax.swing.*;
+import javax.swing.Timer;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractActor {
@@ -33,7 +31,11 @@ public class Replica extends AbstractActor {
 
     private final HashMap<String, Integer> AckReceived = new HashMap<>(); // Used in the UPDATE phase
     private final HashMap<String, String> pendingUpdates = new HashMap<>(); // waiting for quorum
-    private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>();
+    private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
+        {
+            add(new MsgWriteOK("init", -1, -1));
+        }
+    };
 
     private final HashMap<String, ActorRef> pendingWriteRequest = new HashMap<>(); // used to response to clients
 
@@ -44,6 +46,8 @@ public class Replica extends AbstractActor {
     private Timer timerElection;
 
     private boolean inElection = false;
+
+    private final PriorityBlockingQueue<MsgWriteOK> writeOkQueue = new PriorityBlockingQueue<>();
 
     public Replica(Integer id) {
         Map<String, Object> mdc = new HashMap<String, Object>();
@@ -165,26 +169,39 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.e + ":" + m.i + " - value: " + m.value);
 
-        String key = m.e + "-" + m.i;
-        if (this.timersWriteOk.containsKey(key)) {
-            this.timersWriteOk.get(key).stop();
-            this.timersWriteOk.remove(key);
-            this.v = m.value;
+        writeOkQueue.add(m);
 
-            // store in the history the write
-            this.updatesHistory.add(m);
+        for (MsgWriteOK msg: writeOkQueue) {
+            MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
+            if (msg.e > lastApplied.e || (msg.e.equals(lastApplied.e) && msg.i.equals(lastApplied.i + 1))) {
+                String key = msg.e + "-" + msg.i;
+                if (this.timersWriteOk.containsKey(key)) {
+                    this.timersWriteOk.get(key).stop();
+                    this.timersWriteOk.remove(key);
+
+                    // store in the history the write
+                    this.updatesHistory.add(msg);
+
+                    log.info("applied " + msg.e + ":" + msg.i + " - value: " + msg.value);
+                }
+
+                if (this.pendingWriteRequest.containsKey(key)) {
+                    ActorRef client = this.pendingWriteRequest.get(key);
+                    sendOneMessage(client, new MsgWriteResponse(msg.value));
+                    this.pendingWriteRequest.remove(key);
+                }
+
+                writeOkQueue.remove(msg);
+            }
         }
+
+        MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() -1);
+        this.v = lastApplied.value;
 
         /*
         if (this.id == 9)
             this.crashed = true;
          */
-
-        if (this.pendingWriteRequest.containsKey(key)) {
-            ActorRef client = this.pendingWriteRequest.get(key);
-            sendOneMessage(client, new MsgWriteResponse(m.value));
-            this.pendingWriteRequest.remove(key);
-        }
     }
 
     private void onMsgHeartbeat(MsgHeartbeat m) {
