@@ -12,6 +12,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.Serializable;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -24,10 +25,10 @@ public class Replica extends AbstractActor {
     // Set with the IDs of the replicas to schedule their crash in a specific phase of the protocol
     final private HashSet<Integer> CRASH_COORD_SENDING_UPDATE = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_UPDATE = new HashSet<>() { { add(8); } };
-    final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() { { add(9); } };
+    final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_AFTER_WRITEOK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_WRITEOK = new HashSet<>() {};
-    final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() { { add(9); } };
     final private HashSet<Integer> CRASH_SENDING_SYNC = new HashSet<>() {};
 
     private String v = "init";
@@ -45,12 +46,12 @@ public class Replica extends AbstractActor {
     // used to store the MsgWriteRequests while an election is going on
     private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
     // used to store the MsgUpdates to avoid loosing them in coordinator crashes on ACK reception
-    private final HashMap<UpdateKey, MsgUpdate> pendingUpdateRequests = new HashMap<>();
+    private final ConcurrentHashMap<UpdateKey, MsgUpdate> pendingUpdateRequests = new ConcurrentHashMap<>();
 
     // used to count the ACKs received in the UPDATE phase
-    private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>();
+    private final ConcurrentHashMap<UpdateKey, Integer> AckReceived = new ConcurrentHashMap<>();
     // used to keep the new value while waiting for the quorum
-    private final HashMap<UpdateKey, String> pendingUpdates = new HashMap<>();
+    private final ConcurrentHashMap<UpdateKey, String> pendingUpdates = new ConcurrentHashMap<>();
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
         {
             add(new MsgWriteOK("init", new UpdateKey(-1, -1)));
@@ -58,12 +59,12 @@ public class Replica extends AbstractActor {
     };
 
     // used to keep MsgWriteRequests between the Broadcast and Update phases
-    private final HashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new HashMap<>();
+    private final ConcurrentHashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new ConcurrentHashMap<>();
     // used to store MsgWriteOK and apply them only in order
     private final PriorityBlockingQueue<MsgWriteOK> writeOkQueue = new PriorityBlockingQueue<>();
 
-    private final HashMap<UpdateKey, Timer> timersWriteOk = new HashMap<>();
-    private final HashMap<String, Timer> timersUpdateRequests = new HashMap<>();
+    private final ConcurrentHashMap<UpdateKey, Timer> timersWriteOk = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Timer> timersUpdateRequests = new ConcurrentHashMap<>();
     private Timer timerCoordinatorHeartbeat;
     private Timer timerHeartbeat;
     private Timer timerElection;
@@ -334,7 +335,6 @@ public class Replica extends AbstractActor {
 
         sendOneMessage(getSender(), new MsgElectionAck());
 
-        nextReplicaTry = 0;
         ActorRef nextReplica = getNextReplica(nextReplicaTry);
 
         // I'm already in the message
@@ -402,6 +402,14 @@ public class Replica extends AbstractActor {
                         // at most one cycle done
                         m.seen.put(id, true);
                         sendOneMessage(nextReplica, m);
+
+                        messageToSend = m;
+
+                        if (this.timerElection != null && this.timerElection.isRunning())
+                            this.timerElection.stop();
+                        this.timerElection = new Timer(this.TIMEOUT, actionElectionTimeout);
+                        this.timerElection.setRepeats(false);
+                        this.timerElection.start();
                     } else {
                         // more than one cycle done, restart the election cause the best candidate is crashed
                         startCoordinatorElection();
