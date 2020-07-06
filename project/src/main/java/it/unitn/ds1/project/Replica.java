@@ -160,11 +160,16 @@ public class Replica extends AbstractActor {
             return;
         }
 
-        MsgWriteRequest mReq = pendingWriteRequestMsg.remove(m.requestId);
+        MsgWriteRequest mReq = null;
+        if (m.requestId != null) {
+            // I created the linked MsgWriteRequest
+            if (pendingWriteRequestMsg.containsKey(m.requestId))
+                mReq = pendingWriteRequestMsg.remove(m.requestId);
 
-        if (this.timersUpdateRequests.containsKey(m.requestId)) {
-            this.timersUpdateRequests.get(m.requestId).stop();
-            this.timersUpdateRequests.remove(m.requestId);
+            if (this.timersUpdateRequests.containsKey(m.requestId)) {
+                this.timersUpdateRequests.get(m.requestId).stop();
+                this.timersUpdateRequests.remove(m.requestId);
+            }
         }
 
         // respond to the coordinator with an ACK
