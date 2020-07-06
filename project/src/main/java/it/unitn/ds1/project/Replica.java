@@ -22,9 +22,9 @@ public class Replica extends AbstractActor {
     final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
 
     // Set with the IDs of the replicas to schedule their crash in a specific phase of the protocol
-    final private HashSet<Integer> CRASH_COORD_SENDING_UPDATE = new HashSet<>() { { add(9); } };
+    final private HashSet<Integer> CRASH_COORD_SENDING_UPDATE = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_UPDATE = new HashSet<>() { { add(8); } };
-    final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() { { add(9); } };
     final private HashSet<Integer> CRASH_AFTER_WRITEOK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_WRITEOK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() {};
@@ -44,6 +44,8 @@ public class Replica extends AbstractActor {
 
     // used to store the MsgWriteRequests while an election is going on
     private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
+    // used to store the MsgUpdates to avoid loosing them in coordinator crashes on ACK reception
+    private final HashMap<UpdateKey, MsgUpdate> pendingUpdateRequests = new HashMap<>();
 
     // used to count the ACKs received in the UPDATE phase
     private final HashMap<UpdateKey, Integer> AckReceived = new HashMap<>();
@@ -150,6 +152,8 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
+        pendingUpdateRequests.put(m.key, m);
+
         if (CRASH_ON_UPDATE.contains(this.id)) { // to simulate a crash
             getSelf().tell(new MsgCrash(), ActorRef.noSender());
             return;
@@ -205,6 +209,8 @@ public class Replica extends AbstractActor {
             return;
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
+
+        pendingUpdateRequests.remove(m.key);
 
         if (CRASH_ON_WRITEOK.contains(this.id)) { // to simulate a crash
             getSelf().tell(new MsgCrash(), ActorRef.noSender());
@@ -367,6 +373,12 @@ public class Replica extends AbstractActor {
                     this.timerCoordinatorHeartbeat.setRepeats(true);
                     this.timerCoordinatorHeartbeat.start();
 
+                    // Add pending updates as new MsgWriteRequests
+                    for(UpdateKey key : pendingUpdateRequests.keySet()) {
+                        MsgUpdate updReq = pendingUpdateRequests.remove(key);
+                        pendingWriteRequestsWhileElection.add(new MsgWriteRequest(updReq.value, updReq.requestId));
+                    }
+
                     // Send SYNCHRONIZATION message and sync replicas
                     MsgSynchronization sync = new MsgSynchronization(this.id, this.epochNumber);
 
@@ -431,6 +443,9 @@ public class Replica extends AbstractActor {
 
         coordinatorIdx = m.id;
         epochNumber = m.epoch;
+
+        // delete pending updates
+        pendingUpdateRequests.clear();
 
         for (MsgWriteOK write : m.missingUpdates) {
             if (!this.updatesHistory.contains(write)) {
