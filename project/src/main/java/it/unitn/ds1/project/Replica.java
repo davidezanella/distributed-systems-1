@@ -28,8 +28,8 @@ public class Replica extends AbstractActor {
     final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_AFTER_WRITEOK = new HashSet<>() {};
     final private HashSet<Integer> CRASH_ON_WRITEOK = new HashSet<>() {};
-    final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() { { add(9); } };
-    final private HashSet<Integer> CRASH_SENDING_SYNC = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_SENDING_SYNC = new HashSet<>() { { add(9); } };
 
     private String v = "init";
     private boolean crashed = false;
@@ -85,7 +85,7 @@ public class Replica extends AbstractActor {
         this.replicas = m.replicas;
         if (this.coordinatorIdx == null) {
             // init coordinator election
-            startCoordinatorElection();
+            startCoordinatorElection(false);
         }
     }
 
@@ -297,11 +297,11 @@ public class Replica extends AbstractActor {
         return true;
     }
 
-    void startCoordinatorElection() {
+    void startCoordinatorElection(Boolean forceStart) {
         if (crashed)
             return;
 
-        if (this.inElection) // an election is already running
+        if (this.inElection && !forceStart) // an election is already running and we don't want to start a new one
             return;
 
         this.inElection = true;
@@ -412,7 +412,7 @@ public class Replica extends AbstractActor {
                         this.timerElection.start();
                     } else {
                         // more than one cycle done, restart the election cause the best candidate is crashed
-                        startCoordinatorElection();
+                        startCoordinatorElection(true);
                     }
                 }
             }
@@ -520,7 +520,7 @@ public class Replica extends AbstractActor {
                 log.info("timeout WriteOK");
             }
 
-            startCoordinatorElection();
+            startCoordinatorElection(false);
         }
     }
 
@@ -539,7 +539,7 @@ public class Replica extends AbstractActor {
 
             pendingWriteRequestsWhileElection.add(this.mReq);
 
-            startCoordinatorElection();
+            startCoordinatorElection(false);
         }
     }
 
@@ -550,7 +550,7 @@ public class Replica extends AbstractActor {
 
             log.info("timeout Heartbeat");
 
-            startCoordinatorElection();
+            startCoordinatorElection(false);
         }
     };
 
