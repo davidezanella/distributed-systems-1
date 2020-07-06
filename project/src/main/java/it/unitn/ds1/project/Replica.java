@@ -356,11 +356,9 @@ public class Replica extends AbstractActor {
             if (!newCoord.equals(coordinatorIdx)) {
                 if (newCoord.equals(id)) {
                     // set up the new coordinator
-
-                    if (this.updatesHistory.size() > 0) {
-                        this.epochNumber = this.updatesHistory.get(this.updatesHistory.size() - 1).key.epoch + 1;
-                        this.sequenceNumber = 0;
-                    }
+                    coordinatorIdx = newCoord;
+                    this.epochNumber += 1;
+                    this.sequenceNumber = 0;
 
                     if (this.timerHeartbeat != null)
                         this.timerHeartbeat.stop(); //not needed since now it's the coordinator
@@ -370,7 +368,7 @@ public class Replica extends AbstractActor {
                     this.timerCoordinatorHeartbeat.start();
 
                     // Send SYNCHRONIZATION message and sync replicas
-                    MsgSynchronization sync = new MsgSynchronization(this.id);
+                    MsgSynchronization sync = new MsgSynchronization(this.id, this.epochNumber);
 
                     for (int repId : m.nodesHistory.keySet()) {
                         for (MsgWriteOK write : this.updatesHistory) {
@@ -432,6 +430,7 @@ public class Replica extends AbstractActor {
         log.info("received " + m + " from " + getSender().path().name() + " - coordId: " + m.id);
 
         coordinatorIdx = m.id;
+        epochNumber = m.epoch;
 
         for (MsgWriteOK write : m.missingUpdates) {
             if (!this.updatesHistory.contains(write)) {
