@@ -1,0 +1,21 @@
+@startuml
+== Replica1 is the coordinator ==
+
+Client0 -> Replica0: WriteRequest(1234)
+Replica0 -> Replica1: WriteRequest(1234)
+Replica1 -> Replica0: Update(1234, e=0, i=3)
+Client1 -> Replica1: WriteRequest(4567)
+Replica1 -> Replica0: Update(4567, e=0, i=4)
+Replica0 -> Replica1: ACK(e=0, i=3)
+Replica0 -> Replica1: ACK(e=0, i=4)
+
+== WriteOKs arrive out of order ==
+
+Replica1 -> Replica0: WriteOK(4567, e=0, i=4)
+hnote over Replica0: New WriteOK added in \nPendingWriteOK PriorityQueue
+hnote over Replica0: WriteOK in PendingWriteOK not applied
+Replica1 -> Replica0: WriteOK(1234, e=0, i=3)
+hnote over Replica0: New WriteOK added in \nPendingWriteOK PriorityQueue
+hnote over Replica0: WriteOKs in PendingWriteOK \napplied in order
+
+@enduml

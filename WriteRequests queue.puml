@@ -1,0 +1,15 @@
+@startuml
+== An election is going on ==
+Replica0 -> Replica1: Election
+Replica1 -> Replica0: ElectionACK
+
+Client -> Replica0: WriteRequest(1234)
+hnote over Replica0: Put WriteRequest into \nPendingWriteRequests queue
+
+Replica1 -> Replica0: Synchronization
+
+== Replica1 is the new coordinator ==
+
+hnote over Replica0: Elaborate PendingWriteRequests \nmessages
+Replica0 -> Replica1: WriteRequest(1234)
+@enduml

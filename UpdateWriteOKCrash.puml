@@ -1,0 +1,38 @@
+@startuml
+== Replica1 is the coordinator ==
+
+Client0 -> Replica0: WriteRequest(1234)
+Replica0 -> Replica1: WriteRequest(1234, reqID=890)
+hnote over Replica0: Stop timer for WriteRequest reqID=890
+Replica1 -> Replica0: Update(1234, reqID=890, e=0, i=5)
+Replica1 -->o Replica1: Crash
+Replica0 -> Replica1: ACK(e=0, i=5)
+
+hnote over Replica0: Timeout for Update e=0, i=5
+hnote over Replica0: Put WriteRequest into \nPendingWriteRequests queue
+
+== An election starts ==
+Replica0 -> Replica2: Election
+Replica2 -> Replica0: ElectionACK
+Replica2 -> Replica3: Election
+Replica3 -> Replica2: ElectionACK
+
+... Election goes on ...
+
+Replica3 -> Replica0: Synchronization
+Replica3 -> Replica2: Synchronization
+
+== Replica3 is the new coordinator ==
+
+hnote over Replica0: Elaborate PendingWriteRequests \nmessages
+Replica0 -> Replica3: WriteRequest(1234, reqID=910)
+Replica3 -> Replica0: Update(1234, reqID=910, e=1, i=0)
+hnote over Replica0: Stop timer for WriteRequest reqID=910
+Replica3 -> Replica2: Update(1234, reqID=910, e=1, i=0)
+Replica0 -> Replica3: ACK(e=1, i=0)
+Replica2 -> Replica3: ACK(e=1, i=0)
+Replica3 -> Replica0: WriteOK(1234, reqID=910, e=1, i=0)
+hnote over Replica0: Stop timer for Update e=1, i=0
+
+... Process goes on ...
+@enduml
