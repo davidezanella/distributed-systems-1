@@ -489,9 +489,14 @@ public class Replica extends AbstractActor {
             if (crashed)
                 return;
 
-            log.info("timeout WriteOK, adding message to queue");
+            if (this.mReq != null) { // I've forwarded the MsgWriteRequest to the coordinator
+                log.info("timeout WriteOK, adding message to queue");
 
-            pendingWriteRequestsWhileElection.add(this.mReq);
+                pendingWriteRequestsWhileElection.add(this.mReq);
+            }
+            else { // I didn't manage the original MsgWriteRequest coming from the client
+                log.info("timeout WriteOK");
+            }
 
             startCoordinatorElection();
         }
