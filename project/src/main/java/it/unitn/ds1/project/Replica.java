@@ -31,29 +31,31 @@ public class Replica extends AbstractActor {
     final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() {};
     final private HashSet<Integer> CRASH_SENDING_SYNC = new HashSet<>() { { add(9); } };
 
-    private String v = "init";
-    private boolean crashed = false;
-    private boolean inElection = false;
-    private Integer coordinatorIdx;
-    private Integer sequenceNumber = 0;
-    private Integer epochNumber = -1;
-    final private Integer id;
-    private ActorRef[] replicas;
+    private String v = "init"; // value that the replica write and read
+    private boolean crashed = false; // states if the replica is crashed or not
+    private boolean inElection = false; // states if the replica is in an election phase
+    private Integer coordinatorId; // ID of the coordinator
+    private Integer sequenceNumber = 0; // current sequence number if the replica is the coordinator
+    private Integer epochNumber = -1; // current epoch number if the replica if the coordinator
+    final private Integer id; // ID of the current replica
+    private ActorRef[] replicas; // set of all the replicas in the system, crashed and not
 
-    private Integer nextReplicaTry = 0;
-    private Serializable messageToSend;
+    private Integer nextReplicaTry = 0; // distance from the next neighbour replica
+    private Serializable messageToSend; // store the message to send when next replica is crashed during an election
 
     // used to store the MsgWriteRequests while an election is going on
     private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
-    // used to store the MsgUpdates to avoid loosing them in coordinator crashes on ACK reception
+    // used to store the MsgUpdates to avoid loosing them when coordinator crashes on ACK reception
     private final ConcurrentHashMap<UpdateKey, MsgUpdate> pendingUpdateRequests = new ConcurrentHashMap<>();
 
     // used to count the ACKs received in the UPDATE phase
     private final ConcurrentHashMap<UpdateKey, Integer> AckReceived = new ConcurrentHashMap<>();
     // used to keep the new value while waiting for the quorum
     private final ConcurrentHashMap<UpdateKey, String> pendingUpdates = new ConcurrentHashMap<>();
+    // history of the updates applied by the replica
     private final ArrayList<MsgWriteOK> updatesHistory = new ArrayList<>() {
         {
+            // initial value
             add(new MsgWriteOK("init", new UpdateKey(-1, -1)));
         }
     };
@@ -63,10 +65,15 @@ public class Replica extends AbstractActor {
     // used to store MsgWriteOK and apply them only in order
     private final PriorityBlockingQueue<MsgWriteOK> writeOkQueue = new PriorityBlockingQueue<>();
 
+    // map of the timers for catching timeouts while going from the Update phase to the WriteOk one
     private final ConcurrentHashMap<UpdateKey, Timer> timersWriteOk = new ConcurrentHashMap<>();
+    // map of the timers for catching timeouts while going from the Broadcast phase to the Update one
     private final ConcurrentHashMap<String, Timer> timersUpdateRequests = new ConcurrentHashMap<>();
+    // timer to send Heartbeats from the coordinator to all the replicas
     private Timer timerCoordinatorHeartbeat;
+    // timer to manage the timeouts while waiting for Heartbeats from the coordinator
     private Timer timerHeartbeat;
+    // timer that is triggered when, during an election, a replica doesn't answer with an election ACK message
     private Timer timerElection;
 
     public Replica(Integer id) {
@@ -81,14 +88,16 @@ public class Replica extends AbstractActor {
         return Props.create(Replica.class, () -> new Replica(id));
     }
 
+    // Special message used to set the replicas array and start an election to decide the coordinator
     private void onMsgReplicasInit(MsgReplicasInit m) {
         this.replicas = m.replicas;
-        if (this.coordinatorIdx == null) {
+        if (this.coordinatorId == null) {
             // init coordinator election
             startCoordinatorElection(false);
         }
     }
 
+    // Handles the ReadRequests coming from a Client, returns the value of v
     private void onMsgReadRequest(MsgReadRequest m) {
         if (this.crashed)
             return;
@@ -99,6 +108,7 @@ public class Replica extends AbstractActor {
         sendOneMessage(getSender(), new MsgReadResponse(v));
     }
 
+    // Handles the WriteRequests, it adds the message to a queue and, if not in election process all the WriteRequests of the queue
     private void onMsgWriteRequest(MsgWriteRequest m) {
         if (this.crashed)
             return;
@@ -114,15 +124,21 @@ public class Replica extends AbstractActor {
         processPendingWriteRequests();
     }
 
+    /**
+     * Process the MsgWriteRequests present in the queue.
+     * If this replica is the coordinator, it creates a new Update request to send to all the replicas.
+     * Otherwise, the replica attach to the Write request a special requestId to recognize the answer later on, and
+     * forwards this new request to the coordinator. A timer is created to be sure that the Write request will not be lost.
+     */
     private void processPendingWriteRequests() {
         while (!pendingWriteRequestsWhileElection.isEmpty()) {
             MsgWriteRequest m = pendingWriteRequestsWhileElection.pollFirst();
-            if (this.id.equals(this.coordinatorIdx)) {
+            if (this.id.equals(this.coordinatorId)) { // I'm the coordinator
                 this.sequenceNumber++;
 
                 UpdateKey key = new UpdateKey(this.epochNumber, this.sequenceNumber);
                 this.AckReceived.put(key, 0);
-                this.pendingUpdates.put(key, m.newValue);
+                this.pendingUpdates.put(key, m.newValue); // to store the proposed value
                 final MsgUpdate update = new MsgUpdate(m.newValue, key, m.requestId);
 
                 if (CRASH_COORD_SENDING_UPDATE.contains(this.id)) { // to simulate a crash
@@ -136,7 +152,7 @@ public class Replica extends AbstractActor {
                 String requestId = Utils.generateRandomString();
                 MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
                 // forward the request to the coordinator
-                sendOneMessage(replicas[coordinatorIdx], req);
+                sendOneMessage(replicas[coordinatorId], req);
 
                 this.pendingWriteRequestMsg.put(requestId, m);
                 Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(m));
@@ -147,13 +163,15 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // Handles the delivery of an Update message.
+    // Send back to the coordinator an ACK message and a timer is created to avoid loosing the update if the coordinator crashes.
     private void onMsgUpdate(MsgUpdate m) {
         if (this.crashed)
             return;
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
-        pendingUpdateRequests.put(m.key, m);
+        pendingUpdateRequests.put(m.key, m); // to avoid loosing the request if the coordinator crashes
 
         if (CRASH_ON_UPDATE.contains(this.id)) { // to simulate a crash
             getSelf().tell(new MsgCrash(), ActorRef.noSender());
@@ -161,8 +179,7 @@ public class Replica extends AbstractActor {
         }
 
         MsgWriteRequest mReq = null;
-        if (m.requestId != null) {
-            // I created the linked MsgWriteRequest
+        if (m.requestId != null) { // I created the MsgWriteRequest linked to this update
             if (pendingWriteRequestMsg.containsKey(m.requestId))
                 mReq = pendingWriteRequestMsg.remove(m.requestId);
 
@@ -184,6 +201,8 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // Handles the Ack messages coming from the replicas after an Update message.
+    // Counts the ACK received and in case of quorum, sends the WrietOK message to all the replicas.
     private void onMsgAck(MsgAck m) throws Exception {
         if (this.crashed)
             return;
@@ -195,7 +214,7 @@ public class Replica extends AbstractActor {
             return;
         }
 
-        if (!this.id.equals(this.coordinatorIdx)) {
+        if (!this.id.equals(this.coordinatorId)) {
             throw new Exception("Not coordinator replica received an ACK message!");
         }
 
@@ -210,28 +229,31 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // Handles the message WriteOk coming from the coordinator.
+    // Stops the timer set in the Update phase and applies only the correct updates
     private void onMsgWriteOK(MsgWriteOK m) {
         if (this.crashed)
             return;
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
-        pendingUpdateRequests.remove(m.key);
+        pendingUpdateRequests.remove(m.key); // remove from the pending updates since now it's not pending anymore
 
         if (CRASH_ON_WRITEOK.contains(this.id)) { // to simulate a crash
             getSelf().tell(new MsgCrash(), ActorRef.noSender());
             return;
         }
 
-        if (this.timersWriteOk.containsKey(m.key)) {
+        if (this.timersWriteOk.containsKey(m.key)) { // stop the timer that waits for the WriteOK linked the Update message
             this.timersWriteOk.get(m.key).stop();
             this.timersWriteOk.remove(m.key);
         }
 
-        writeOkQueue.add(m);
+        writeOkQueue.add(m); // add to the list of updates to apply
 
         for (MsgWriteOK msg : writeOkQueue) {
             MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
+            // check if msg is the next update following the last applied (sequence number increased by 1)
             if (msg.key.epoch > lastApplied.key.epoch ||
                     (msg.key.epoch.equals(lastApplied.key.epoch) && msg.key.sequence.equals(lastApplied.key.sequence + 1))) {
                 // store in the history the write
@@ -244,7 +266,7 @@ public class Replica extends AbstractActor {
         }
 
         MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
-        this.v = lastApplied.value;
+        this.v = lastApplied.value; // assign to v only the last update's value
 
         if (CRASH_AFTER_WRITEOK.contains(this.id)) { // to simulate a crash
             getSelf().tell(new MsgCrash(), ActorRef.noSender());
@@ -252,14 +274,13 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // Handles heartbeats coming from the coordinator
+    // It stops the previous Heartbeat timer and initiates a new one.
     private void onMsgHeartbeat(MsgHeartbeat m) {
-        /*
-        Every time it receives a heartbeat from the coordinator, it stops the previous timer and initiates a new one.
-        */
         if (this.crashed)
             return;
 
-        this.inElection = false;
+        this.inElection = false; // for sure we are not in election, cause heartbeats come only from a coordinator
 
         if (m != null)
             log.info("received " + m + " from " + getSender().path().name());
@@ -272,10 +293,12 @@ public class Replica extends AbstractActor {
         this.timerHeartbeat.start();
     }
 
+    // Returns the ID of the next, probably not crashed, replica of the ring
     private ActorRef getNextReplica(Integer idx) {
         return replicas[(id + idx + 1) % replicas.length];
     }
 
+    // Sends a message to all the replicas
     private void broadcastToReplicas(Serializable message) {
         for (ActorRef replica : this.replicas) {
             boolean sent = sendOneMessage(replica, message);
@@ -284,6 +307,7 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // If the replica is not crashed, it sends a message to an actor with a random delay
     private boolean sendOneMessage(ActorRef dest, Serializable msg) {
         if (this.crashed)
             return false;
@@ -302,6 +326,11 @@ public class Replica extends AbstractActor {
         return true;
     }
 
+    /**
+     * Starts the election of a coordinator sending an Election message to the next replica of the ring.
+     * A timer is created to manage the case were the next replica is crashed.
+     * @param forceStart start the election even if we already are in an election phase
+     */
     void startCoordinatorElection(Boolean forceStart) {
         if (crashed)
             return;
@@ -314,7 +343,6 @@ public class Replica extends AbstractActor {
         MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
         election.nodesHistory.put(id, lastValue);
         election.seen.put(id, false);
-        nextReplicaTry = 0;
         ActorRef nextReplica = getNextReplica(nextReplicaTry);
         sendOneMessage(nextReplica, election);
 
@@ -325,6 +353,9 @@ public class Replica extends AbstractActor {
         this.timerElection.start();
     }
 
+    // Handles the Election messages, sending an ElectionACK to the previous replica in the ring and forwarding
+    // the Election message or announcing the new leadership with a Synchronization message.
+    // It manages the case where the best candidate is crashed during the election phase forcing the restart of the election.
     private void onMsgElection(MsgElection m) {
         if (this.crashed)
             return;
@@ -364,22 +395,23 @@ public class Replica extends AbstractActor {
 
             Integer newCoord = ids.get(0);
 
-            if (!newCoord.equals(coordinatorIdx)) {
+            if (!newCoord.equals(coordinatorId)) {
                 if (newCoord.equals(id)) {
                     // set up the new coordinator
-                    coordinatorIdx = newCoord;
+                    coordinatorId = newCoord;
                     this.epochNumber += 1;
                     this.sequenceNumber = 0;
 
                     if (this.timerHeartbeat != null)
-                        this.timerHeartbeat.stop(); //not needed since now it's the coordinator
+                        this.timerHeartbeat.stop(); //not needed since now I'm the coordinator
 
+                    // Needed to start sending Heartbeats
                     this.timerCoordinatorHeartbeat = new Timer(this.TIMEOUT / 4, actionSendHeartbeat);
                     this.timerCoordinatorHeartbeat.setRepeats(true);
                     this.timerCoordinatorHeartbeat.start();
 
                     // Add pending updates as new MsgWriteRequests
-                    for(UpdateKey key : pendingUpdateRequests.keySet()) {
+                    for (UpdateKey key : pendingUpdateRequests.keySet()) {
                         MsgUpdate updReq = pendingUpdateRequests.remove(key);
                         pendingWriteRequestsWhileElection.add(new MsgWriteRequest(updReq.value, updReq.requestId));
                     }
@@ -402,9 +434,8 @@ public class Replica extends AbstractActor {
                     }
                     broadcastToReplicas(sync);
                 } else {
-                    // forward if I'm not the new coordinator
-                    if (m.seen.get(id).equals(false)) {
-                        // at most one cycle done
+                    // forward the election message cause if I'm not the new coordinator
+                    if (m.seen.get(id).equals(false)) { // at most one cycle done
                         m.seen.put(id, true);
                         sendOneMessage(nextReplica, m);
 
@@ -430,6 +461,7 @@ public class Replica extends AbstractActor {
 
             messageToSend = m;
 
+            // start a timer to be sure that the next replica of the ring is not crashed
             if (this.timerElection != null && this.timerElection.isRunning())
                 this.timerElection.stop();
             this.timerElection = new Timer(this.TIMEOUT, actionElectionTimeout);
@@ -438,6 +470,8 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // Handles the delivery of Election ACK messages.
+    // With this kind of messages simply stop the election timer, cause the next replica is not crashed.
     private void onMsgElectionAck(MsgElectionAck m) {
         if (this.timerElection != null && this.timerElection.isRunning())
             this.timerElection.stop();
@@ -448,16 +482,18 @@ public class Replica extends AbstractActor {
         log.info("received " + m + " from " + getSender().path().name());
     }
 
+    // Handles the Synchronization messages.
+    // Set the new coordinatorID and epoch number. Apply the missing updates.
     private void onMsgSynchronization(MsgSynchronization m) {
         if (this.crashed)
             return;
 
         log.info("received " + m + " from " + getSender().path().name() + " - coordId: " + m.id);
 
-        coordinatorIdx = m.id;
+        coordinatorId = m.id;
         epochNumber = m.epoch;
 
-        // delete pending updates
+        // delete pending updates, the coordinator will handle them
         pendingUpdateRequests.clear();
 
         for (MsgWriteOK write : m.missingUpdates) {
@@ -466,12 +502,13 @@ public class Replica extends AbstractActor {
             }
         }
 
-        this.inElection = false;
-        processPendingWriteRequests();
+        this.inElection = false; // the coordinator just announced himself
+        processPendingWriteRequests(); // election is over and we can process pending write requests
 
-        onMsgHeartbeat(null);
+        onMsgHeartbeat(null); // start the Heartbeat timer
     }
 
+    // Handles Crash messages. The replica is crashed.
     private void onMsgCrash(MsgCrash m) {
         log.info("CRASHED");
 
@@ -496,6 +533,7 @@ public class Replica extends AbstractActor {
                 .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
 
+    // The coordinator uses this action to periodically send heartbeats
     ActionListener actionSendHeartbeat = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
             if (crashed)
@@ -505,6 +543,7 @@ public class Replica extends AbstractActor {
         }
     };
 
+    // No WriteOK received after seeing an Update message. Missed WriteRequests will be processed again.
     private class actionWriteOKTimeoutExceeded implements ActionListener {
         private MsgWriteRequest mReq;
 
@@ -520,8 +559,7 @@ public class Replica extends AbstractActor {
                 log.info("timeout WriteOK, adding message to queue");
 
                 pendingWriteRequestsWhileElection.add(this.mReq);
-            }
-            else { // I didn't manage the original MsgWriteRequest coming from the client
+            } else { // I didn't manage the original MsgWriteRequest coming from the client
                 log.info("timeout WriteOK");
             }
 
@@ -529,6 +567,7 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // No Update messages received after sending a WriteRequest to the coordinator. Missed WriteRequests will be processed again.
     private class actionUpdateTimeoutExceeded implements ActionListener {
         private MsgWriteRequest mReq;
 
@@ -548,6 +587,7 @@ public class Replica extends AbstractActor {
         }
     }
 
+    // No heartbeats received within a TIMEOUT interval. The coordinator is crashed.
     ActionListener actionHeartbeatTimeoutExceeded = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
             if (crashed)
@@ -559,6 +599,7 @@ public class Replica extends AbstractActor {
         }
     };
 
+    // No Election ACKs received from the next replica of the ring within a TIMEOUT interval. Try with the successive replica.
     ActionListener actionElectionTimeout = new ActionListener() {
         public void actionPerformed(ActionEvent actionEvent) {
             if (crashed)
