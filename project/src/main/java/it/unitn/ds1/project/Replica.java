@@ -21,13 +21,26 @@ public class Replica extends AbstractActor {
     final private Integer TIMEOUT = 10000; // Timeout value in milliseconds
     final private Integer MAX_RESP_DELAY = 0; // Maximum delay in seconds while sending a message
 
+    // Set with the IDs of the replicas to schedule their crash in a specific phase of the protocol
+    final private HashSet<Integer> CRASH_COORD_SENDING_UPDATE = new HashSet<>() { { add(9); } };
+    final private HashSet<Integer> CRASH_ON_UPDATE = new HashSet<>() { { add(8); } };
+    final private HashSet<Integer> CRASH_COORD_ON_ACK = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_AFTER_WRITEOK = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_ON_WRITEOK = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_ON_MSGELECTION = new HashSet<>() {};
+    final private HashSet<Integer> CRASH_SENDING_SYNC = new HashSet<>() {};
+
     private String v = "init";
     private boolean crashed = false;
-    private Integer coordinatorIdx = 9;
+    private boolean inElection = false;
+    private Integer coordinatorIdx;
     private Integer sequenceNumber = 0;
-    private Integer epochNumber = 0;
+    private Integer epochNumber = -1;
     final private Integer id;
     private ActorRef[] replicas;
+
+    private Integer nextReplicaTry = 0;
+    private Serializable messageToSend;
 
     // used to store the MsgWriteRequests while an election is going on
     private final ArrayDeque<MsgWriteRequest> pendingWriteRequestsWhileElection = new ArrayDeque<>();
@@ -44,16 +57,14 @@ public class Replica extends AbstractActor {
 
     // used to keep MsgWriteRequests between the Broadcast and Update phases
     private final HashMap<String, MsgWriteRequest> pendingWriteRequestMsg = new HashMap<>();
+    // used to store MsgWriteOK and apply them only in order
+    private final PriorityBlockingQueue<MsgWriteOK> writeOkQueue = new PriorityBlockingQueue<>();
 
     private final HashMap<UpdateKey, Timer> timersWriteOk = new HashMap<>();
     private final HashMap<String, Timer> timersUpdateRequests = new HashMap<>();
     private Timer timerCoordinatorHeartbeat;
     private Timer timerHeartbeat;
     private Timer timerElection;
-
-    private boolean inElection = false;
-
-    private final PriorityBlockingQueue<MsgWriteOK> writeOkQueue = new PriorityBlockingQueue<>();
 
     public Replica(Integer id) {
         Map<String, Object> mdc = new HashMap<String, Object>();
@@ -111,21 +122,24 @@ public class Replica extends AbstractActor {
                 this.pendingUpdates.put(key, m.newValue);
                 final MsgUpdate update = new MsgUpdate(m.newValue, key, m.requestId);
 
+                if (CRASH_COORD_SENDING_UPDATE.contains(this.id)) { // to simulate a crash
+                    getSelf().tell(new MsgCrash(), ActorRef.noSender());
+                    return;
+                }
+
                 // Send a broadcast to all the replicas
                 broadcastToReplicas(update);
             } else {
                 String requestId = Utils.generateRandomString();
                 MsgWriteRequest req = new MsgWriteRequest(m.newValue, requestId);
                 // forward the request to the coordinator
-                boolean sent = sendOneMessage(replicas[coordinatorIdx], req);
+                sendOneMessage(replicas[coordinatorIdx], req);
 
-                if (sent) {
-                    this.pendingWriteRequestMsg.put(requestId, m);
-                    Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(m));
-                    timerUpdate.setRepeats(false);
-                    this.timersUpdateRequests.put(requestId, timerUpdate);
-                    timerUpdate.start();
-                }
+                this.pendingWriteRequestMsg.put(requestId, m);
+                Timer timerUpdate = new Timer(this.TIMEOUT, new actionUpdateTimeoutExceeded(m));
+                timerUpdate.setRepeats(false);
+                this.timersUpdateRequests.put(requestId, timerUpdate);
+                timerUpdate.start();
             }
         }
     }
@@ -136,8 +150,12 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
 
-        MsgWriteRequest mReq = pendingWriteRequestMsg.get(m.requestId);
-        pendingWriteRequestMsg.remove(m.requestId);
+        if (CRASH_ON_UPDATE.contains(this.id)) { // to simulate a crash
+            getSelf().tell(new MsgCrash(), ActorRef.noSender());
+            return;
+        }
+
+        MsgWriteRequest mReq = pendingWriteRequestMsg.remove(m.requestId);
 
         if (this.timersUpdateRequests.containsKey(m.requestId)) {
             this.timersUpdateRequests.get(m.requestId).stop();
@@ -162,8 +180,13 @@ public class Replica extends AbstractActor {
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString());
 
+        if (CRASH_COORD_ON_ACK.contains(this.id)) { // to simulate a crash
+            getSelf().tell(new MsgCrash(), ActorRef.noSender());
+            return;
+        }
+
         if (!this.id.equals(this.coordinatorIdx)) {
-            throw new Exception("Not coordinator replica receives ACK message!");
+            throw new Exception("Not coordinator replica received an ACK message!");
         }
 
         if (this.AckReceived.containsKey(m.key)) {
@@ -182,6 +205,11 @@ public class Replica extends AbstractActor {
             return;
 
         log.info("received " + m + " from " + getSender().path().name() + " " + m.key.toString() + " - value: " + m.value);
+
+        if (CRASH_ON_WRITEOK.contains(this.id)) { // to simulate a crash
+            getSelf().tell(new MsgCrash(), ActorRef.noSender());
+            return;
+        }
 
         if (this.timersWriteOk.containsKey(m.key)) {
             this.timersWriteOk.get(m.key).stop();
@@ -206,10 +234,10 @@ public class Replica extends AbstractActor {
         MsgWriteOK lastApplied = this.updatesHistory.get(this.updatesHistory.size() - 1);
         this.v = lastApplied.value;
 
-
-        if (this.id == 9)
-            this.crashed = true;
-
+        if (CRASH_AFTER_WRITEOK.contains(this.id)) { // to simulate a crash
+            getSelf().tell(new MsgCrash(), ActorRef.noSender());
+            return;
+        }
     }
 
     private void onMsgHeartbeat(MsgHeartbeat m) {
@@ -218,6 +246,8 @@ public class Replica extends AbstractActor {
         */
         if (this.crashed)
             return;
+
+        this.inElection = false;
 
         if (m != null)
             log.info("received " + m + " from " + getSender().path().name());
@@ -283,19 +313,14 @@ public class Replica extends AbstractActor {
         this.timerElection.start();
     }
 
-    private Integer nextReplicaTry = 0;
-    private Serializable messageToSend;
-
     private void onMsgElection(MsgElection m) {
         if (this.crashed)
             return;
 
-        /*
-        if (this.id == 4){
-            this.crashed = true;
+        if (CRASH_ON_MSGELECTION.contains(this.id)) { // to simulate a crash
+            getSelf().tell(new MsgCrash(), ActorRef.noSender());
             return;
         }
-         */
 
         this.inElection = true;
 
@@ -356,7 +381,10 @@ public class Replica extends AbstractActor {
                             }
                         }
                     }
-
+                    if (CRASH_SENDING_SYNC.contains(this.id)) { // to simulate a crash
+                        getSelf().tell(new MsgCrash(), ActorRef.noSender());
+                        return;
+                    }
                     broadcastToReplicas(sync);
                 } else {
                     // forward if I'm not the new coordinator
@@ -371,6 +399,7 @@ public class Replica extends AbstractActor {
                 }
             }
         } else {
+            // insert myself in the candidate list and forward the message
             MsgWriteOK lastValue = updatesHistory.get(updatesHistory.size() - 1);
             m.nodesHistory.put(id, lastValue);
             m.seen.put(id, false);
@@ -416,17 +445,8 @@ public class Replica extends AbstractActor {
         onMsgHeartbeat(null);
     }
 
-    ActionListener actionSendHeartbeat = new ActionListener() {
-        public void actionPerformed(ActionEvent actionEvent) {
-            if (crashed)
-                return;
-
-            broadcastToReplicas(new MsgHeartbeat());
-        }
-    };
-
     private void onMsgCrash(MsgCrash m) {
-        log.info("received " + m + " from " + getSender().path().name());
+        log.info("CRASHED");
 
         this.crashed = true;
     }
@@ -448,6 +468,15 @@ public class Replica extends AbstractActor {
                 .match(MsgElectionAck.class, this::onMsgElectionAck)
                 .match(MsgSynchronization.class, this::onMsgSynchronization).build();
     }
+
+    ActionListener actionSendHeartbeat = new ActionListener() {
+        public void actionPerformed(ActionEvent actionEvent) {
+            if (crashed)
+                return;
+
+            broadcastToReplicas(new MsgHeartbeat());
+        }
+    };
 
     private class actionWriteOKTimeoutExceeded implements ActionListener {
         private MsgWriteRequest mReq;
