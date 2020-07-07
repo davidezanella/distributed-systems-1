@@ -8,8 +8,6 @@ it/unitn/ds1/project/MsgSynchronization.java
  it.unitn.ds1.project.MsgSynchronization
 it/unitn/ds1/project/MsgWriteRequest.java
  it.unitn.ds1.project.MsgWriteRequest
-it/unitn/ds1/project/MsgRWResponse.java
- it.unitn.ds1.project.MsgRWResponse
 it/unitn/ds1/project/MsgUpdate.java
  it.unitn.ds1.project.MsgUpdate
 it/unitn/ds1/project/MsgAck.java
@@ -20,14 +18,22 @@ it/unitn/ds1/project/MsgSelf.java
  it.unitn.ds1.project.MsgSelf
 it/unitn/ds1/project/MsgElectionAck.java
  it.unitn.ds1.project.MsgElectionAck
+it/unitn/ds1/project/UpdateKey.java
+ it.unitn.ds1.project.UpdateKey
+it/unitn/ds1/project/MsgReadResponse.java
+ it.unitn.ds1.project.MsgReadResponse
 it/unitn/ds1/project/MsgElection.java
  it.unitn.ds1.project.MsgElection
+it/unitn/ds1/project/MsgWriteResponse.java
+ it.unitn.ds1.project.MsgWriteResponse
 it/unitn/ds1/project/Utils.java
  it.unitn.ds1.project.Utils
 it/unitn/ds1/project/MsgHeartbeat.java
  it.unitn.ds1.project.MsgHeartbeat
-it/unitn/ds1/project/MsgCrash.java
- it.unitn.ds1.project.MsgCrash
+it/unitn/ds1/project/Main.java
+ it.unitn.ds1.project.Main
+it/unitn/ds1/project/ScheduledClient.java
+ it.unitn.ds1.project.ScheduledClient
 it/unitn/ds1/project/Replica.java
  it.unitn.ds1.project.Replica
  it.unitn.ds1.project.Replica$1
@@ -35,10 +41,7 @@ it/unitn/ds1/project/Replica.java
  it.unitn.ds1.project.Replica$3
  it.unitn.ds1.project.Replica$4
  it.unitn.ds1.project.Replica$5
- it.unitn.ds1.project.Replica$6
-it/unitn/ds1/project/MsgCoordinator.java
- it.unitn.ds1.project.MsgCoordinator
-it/unitn/ds1/project/Main.java
- it.unitn.ds1.project.Main
-it/unitn/ds1/project/ScheduledClient.java
- it.unitn.ds1.project.ScheduledClient
+ it.unitn.ds1.project.Replica$actionUpdateTimeoutExceeded
+ it.unitn.ds1.project.Replica$actionWriteOKTimeoutExceeded
+it/unitn/ds1/project/MsgCrash.java
+ it.unitn.ds1.project.MsgCrash

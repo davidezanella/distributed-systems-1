@@ -5,6 +5,11 @@ import akka.actor.Props;
 
 import java.io.Serializable;
 
+/*
+*   Class created for debug purposes
+*   Not used anymore
+*/ 
+
 public class ScheduledClient extends Client {
     private int cont_messages;
 
